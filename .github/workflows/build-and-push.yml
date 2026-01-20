@@ -8,6 +8,7 @@ on:
       - Dockerfile
       - entrypoint.sh
       - requirements.txt
+      - .dockerignore
       - .github/workflows/build-and-push.yml
 
 permissions:
@@ -24,14 +25,29 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Free disk space (before build)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "== Disk before =="
+          df -h
+          echo "== Removing big preinstalled toolchains to free space =="
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
+          sudo apt-get clean || true
+          echo "== Disk after =="
+          df -h
 
       - name: Compute image name + tags
         shell: bash
         run: |
-          # Lowercase repo path for GHCR
-          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
-          echo "DATE=$(date +%Y%m%d-%H%M%S)" >> $GITHUB_ENV
-          echo "SHA=${GITHUB_SHA::7}" >> $GITHUB_ENV
+          set -euo pipefail
+          # GHCR prefers lowercase image names
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "DATE=$(date -u +%Y%m%d-%H%M%S)" >> "$GITHUB_ENV"
+          echo "SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
@@ -47,13 +63,25 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile
+          file: ./Dockerfile
           platforms: linux/amd64
+          pull: true
           push: true
           tags: |
             ${{ env.IMAGE }}:latest
             ${{ env.IMAGE }}:sha-${{ env.SHA }}
             ${{ env.IMAGE }}:${{ env.DATE }}
+          # Cache: keep it, but make it smaller to avoid disk explosions
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-to: type=gha,mode=min
           provenance: false
+
+      - name: Docker cleanup (after build)
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker system df || true
+          docker builder prune -af || true
+          docker system prune -af || true
+          df -h || true
