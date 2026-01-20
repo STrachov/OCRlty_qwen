@@ -1,4 +1,4 @@
-FROM vllm/vllm-openai:0.13.0
+FROM vllm/vllm-openai:v0.13.0
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
