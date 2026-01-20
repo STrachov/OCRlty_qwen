@@ -1,0 +1,18 @@
+FROM vllm/vllm-openai:0.13.0
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Install orchestrator dependencies (vLLM is already in the base image).
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+WORKDIR /workspace
+
+COPY app /workspace/app
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 8000 8080
+
+ENTRYPOINT ["/entrypoint.sh"]

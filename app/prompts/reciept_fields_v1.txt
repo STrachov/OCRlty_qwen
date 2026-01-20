@@ -1,0 +1,2 @@
+Extract receipt fields from the image and return only JSON that matches the provided JSON schema.
+Use null when a value is missing or not visible.

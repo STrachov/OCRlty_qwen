@@ -1,0 +1,74 @@
+vllm/vllm-openai:latest
+
+Container Start Command:
+for A40:
+--model Qwen/Qwen3-VL-8B-Instruct
+--host 0.0.0.0
+--port 8000
+--limit-mm-per-prompt.video 0
+--max-model-len 4096
+--gpu-memory-utilization 0.75
+--dtype float16
+
+For A5000:
+--model Qwen/Qwen3-VL-8B-Instruct
+--host 0.0.0.0
+--port 8000
+--dtype float16
+--max-model-len 4096
+--gpu-memory-utilization 0.90
+--max-num-seqs 1
+--limit-mm-per-prompt.video 0
+--enforce-eager
+
+
+8888,8000
+
+HF_HOME=/workspace/cache/hf
+HUGGINGFACE_HUB_CACHE=/workspace/cache/hf/hub
+OMP_NUM_THREADS=1
+
+
+nvidia-smi
+
+curl -s http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model":"Qwen/Qwen3-VL-8B-Instruct",
+    "messages":[{"role":"user","content":[
+      {"type":"image_url","image_url":{"url":"https://ofasys-multimodal-wlcb-3-toshanghai.oss-accelerate.aliyuncs.com/wpf272043/keepme/image/receipt.png"}},
+      {"type":"text","text":"Extract fields and return ONLY valid JSON with keys: vendor, currency, total, payment_method, cash_paid, change_due. Use null if missing."}
+    ]}],
+    "max_tokens":256,
+    "temperature":0
+  }'
+
+
+
+curl -s http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model":"Qwen/Qwen3-VL-8B-Instruct",
+    "messages":[{"role":"user","content":[
+      {"type":"image_url","image_url":{"url":"https://ofasys-multimodal-wlcb-3-toshanghai.oss-accelerate.aliyuncs.com/wpf272043/keepme/image/receipt.png"}},
+      {"type":"text","text":"Extract receipt fields from the image."}
+    ]}],
+    "temperature":0,
+    "max_tokens":128,
+    "response_format":{
+      "type":"json_schema",
+      "json_schema":{
+        "name":"receipt_fields",
+        "schema":{
+          "type":"object",
+          "properties":{
+            "vendor":{"type":["string","null"]},
+            "total":{"type":["number","null"]},
+            "currency":{"type":["string","null"]}
+          },
+          "required":["vendor","total","currency"],
+          "additionalProperties":false
+        }
+      }
+    }
+  }'

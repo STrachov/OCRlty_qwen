@@ -1,0 +1,11 @@
+{
+    "type": "object",
+    "properties": {
+      "vendor": { "type": ["string", "null"] },
+      "total": { "type": ["number", "null"] },
+      "currency": { "type": ["string", "null"] }
+    },
+    "required": ["vendor", "total", "currency"],
+    "additionalProperties": false
+  }
+  
