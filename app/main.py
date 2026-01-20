@@ -170,7 +170,7 @@ async def extract_receipt_fields_v1(req: ExtractReceiptFieldsRequest) -> Extract
                 "vllm_ms": (t_vllm1 - t_vllm0) * 1000.0,
                 "total_ms": (time.perf_counter() - t0) * 1000.0,
             },
-            "artifact_path": artifact_path,
+            
         },
     )
 
