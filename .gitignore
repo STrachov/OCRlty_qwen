@@ -1,0 +1,41 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+
+# Packaging / builds
+*.egg-info/
+.eggs/
+
+# Unit tests / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# === IDEs ===
+.vscode/
+.idea/
+
+# === OS ===
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# === Logs ===
+*.log
+
+# === Secrets ===
+.env
+.env.*
+!.env.example
+
+# HuggingFace / caches (часто лучше не коммитить)
+.cache/
+huggingface/
+hf_home/
