@@ -39,3 +39,8 @@ desktop.ini
 .cache/
 huggingface/
 hf_home/
+
+# === Local db and files ===
+auth/
+artifacts/
+docs/

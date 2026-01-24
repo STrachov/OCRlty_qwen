@@ -29,3 +29,19 @@ curl -s http://127.0.0.1:8080/extract/receipt_fields_v1 \
     "image_url": "https://ofasys-multimodal-wlcb-3-toshanghai.oss-accelerate.aliyuncs.com/wpf272043/keepme/image/receipt.png"
   }'
 Artifacts are saved under ARTIFACTS_DIR/YYYY-MM-DD/<request_id>.json
+
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8080
+
+python -m app.auth_cli init-db
+python -m app.auth_cli create-key --key-id test_client --role client
+python -m app.auth_cli list-keys
+python -m app.auth_cli revoke-key --key-id test_client
+
+test_client jR-0x1hKE8w3Ro-f7QPD0iE2-vVCAkWaQi6EuqBwOQE
+test_admin GUFsS3nhwUhOCz8lh6AQfngtiY9EZPZPr5slC88pqK8
+
+curl.exe -s -H "Authorization: Bearer GUFsS3nhwUhOCz8lh6AQfngtiY9EZPZPr5slC88pqK8" http://127.0.0.1:8080/v1/me
+
+
+pip install pip-tools
+pip-compile --output-file=requirements.txt requirements.in

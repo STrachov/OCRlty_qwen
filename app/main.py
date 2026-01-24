@@ -5,20 +5,22 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel, Field
 from jsonschema import Draft202012Validator
 
 from app.vllm_client import VLLMClient
-
+from app.auth import ApiPrincipal, init_auth_db, require_api_key
+from app.settings import settings
 
 APP_ROOT = Path(__file__).resolve().parent
 SCHEMAS_DIR = APP_ROOT / "schemas"
 PROMPTS_DIR = APP_ROOT / "prompts"
 
-ARTIFACTS_DIR = Path(os.getenv("ARTIFACTS_DIR", "/workspace/artifacts")).resolve()
-MODEL_ID = os.getenv("VLLM_MODEL", "Qwen/Qwen3-VL-8B-Instruct")
+ARTIFACTS_DIR = Path(settings.ARTIFACTS_DIR).resolve()
+MODEL_ID = settings.VLLM_MODEL
 
 # Load schema once at startup
 RECEIPT_FIELDS_V1_SCHEMA_PATH = SCHEMAS_DIR / "receipt_fields_v1.schema.json"
@@ -28,8 +30,17 @@ RECEIPT_FIELDS_V1_VALIDATOR = Draft202012Validator(RECEIPT_FIELDS_V1_SCHEMA)
 PROMPT_RECEIPT_FIELDS_V1 = (PROMPTS_DIR / "receipt_fields_v1.txt").read_text(encoding="utf-8").strip()
 
 vllm = VLLMClient()
-app = FastAPI(title="Qwen3-VL Orchestrator", version="0.1.0")
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_auth_db()
+    yield
+
+app = FastAPI(
+    title="Qwen3-VL Orchestrator", 
+    version="0.1.0",
+    lifespan=lifespan,
+    )
 
 class ExtractReceiptFieldsRequest(BaseModel):
     # Provide either image_url OR image_base64.
@@ -86,9 +97,15 @@ async def health() -> Dict[str, Any]:
     except Exception as e:
         return {"ok": True, "vllm_ok": False, "error": str(e)}
 
+@app.get("/v1/me")
+async def me(principal: ApiPrincipal = Depends(require_api_key)):
+    return {"key_id": principal.key_id, "role": principal.role, "scopes": sorted(list(principal.scopes))}
 
-@app.post("/extract/receipt_fields_v1", response_model=ExtractReceiptFieldsResponse)
-async def extract_receipt_fields_v1(req: ExtractReceiptFieldsRequest) -> ExtractReceiptFieldsResponse:
+@app.post("/v1/extract", response_model=ExtractReceiptFieldsResponse)
+async def extract_receipt_fields(
+    req: ExtractReceiptFieldsRequest,
+    principal: ApiPrincipal = Depends(require_api_key),  # <-- Stage 1: key required (if AUTH_ENABLED=1)
+) -> ExtractReceiptFieldsResponse:
     request_id = _make_request_id(req.request_id)
 
     t0 = time.perf_counter()
@@ -139,6 +156,7 @@ async def extract_receipt_fields_v1(req: ExtractReceiptFieldsRequest) -> Extract
                 "request_id": request_id,
                 "model": MODEL_ID,
                 "input": req.model_dump(),
+                "auth": {"key_id": principal.key_id, "role": principal.role},  # safe metadata
                 "raw_response": raw,
                 "raw_model_text": raw_text,
                 "error": f"json_parse_error: {e}",
@@ -160,6 +178,7 @@ async def extract_receipt_fields_v1(req: ExtractReceiptFieldsRequest) -> Extract
             "request_id": request_id,
             "model": MODEL_ID,
             "input": req.model_dump(),
+            "auth": {"key_id": principal.key_id, "role": principal.role},  # safe metadata
             "schema": "receipt_fields_v1",
             "schema_ok": schema_ok,
             "schema_errors": errors,
@@ -170,7 +189,6 @@ async def extract_receipt_fields_v1(req: ExtractReceiptFieldsRequest) -> Extract
                 "vllm_ms": (t_vllm1 - t_vllm0) * 1000.0,
                 "total_ms": (time.perf_counter() - t0) * 1000.0,
             },
-            
         },
     )
 
