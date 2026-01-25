@@ -2,7 +2,6 @@
 import hmac
 import hashlib
 import json
-import os
 import secrets
 import sqlite3
 from dataclasses import dataclass
@@ -10,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
-from fastapi import HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 from app.settings import settings
 
 # --- Env / config ---
@@ -70,10 +69,7 @@ def _connect(db_path: str) -> sqlite3.Connection:
 
 
 def init_auth_db(db_path: str = AUTH_DB_PATH) -> None:
-    """
-    Creates tables if not exist.
-    Safe to call on every startup.
-    """
+    """Creates tables if not exist. Safe to call on every startup."""
     if AUTH_ENABLED:
         _require_pepper()
 
@@ -181,8 +177,9 @@ def require_api_key(request: Request) -> ApiPrincipal:
       - If AUTH_ENABLED=1 -> requires valid active key.
     """
     if not AUTH_ENABLED:
-        # Dev mode: keep API open, but still provide a principal shape.
-        return ApiPrincipal(api_key_id=0, key_id="anonymous", role="anonymous", scopes=set())
+        principal = ApiPrincipal(api_key_id=0, key_id="anonymous", role="anonymous", scopes=set())
+        request.state.principal = principal
+        return principal
 
     api_key = extract_api_key_from_request(request)
     if not api_key:
@@ -192,9 +189,24 @@ def require_api_key(request: Request) -> ApiPrincipal:
     if principal is None:
         raise HTTPException(status_code=403, detail="Invalid or inactive API key.")
 
-    # Store on request for logs/debug if needed (do NOT store the raw api key).
     request.state.principal = principal
     return principal
+
+
+def require_scopes(required_scopes: Sequence[str]):
+    """Dependency factory that enforces scopes when AUTH is enabled."""
+    required = [s.strip() for s in required_scopes if s and str(s).strip()]
+
+    def _dep(principal: ApiPrincipal = Depends(require_api_key)) -> ApiPrincipal:
+        if not AUTH_ENABLED:
+            return principal
+
+        missing = [s for s in required if s not in principal.scopes]
+        if missing:
+            raise HTTPException(status_code=403, detail=f"Missing required scope(s): {', '.join(missing)}")
+        return principal
+
+    return _dep
 
 
 # --- CLI utilities (used by app/auth_cli.py) ---
@@ -209,10 +221,7 @@ def create_api_key(
     scopes: Optional[Sequence[str]] = None,
     db_path: str = AUTH_DB_PATH,
 ) -> Tuple[str, ApiPrincipal]:
-    """
-    Creates a new API key. Returns (raw_api_key, principal).
-    Raw key is shown once to the operator.
-    """
+    """Creates a new API key. Returns (raw_api_key, principal)."""
     pepper = _require_pepper()
     init_auth_db(db_path)
 
@@ -237,8 +246,7 @@ def create_api_key(
                 """
                 INSERT INTO api_keys (key_id, key_hash, role, scopes, is_active, created_at)
                 VALUES (?, ?, ?, ?, 1, ?);
-                """,
-                (key_id, kh, role, scopes_json, created_at),
+                """,                (key_id, kh, role, scopes_json, created_at),
             )
             conn.commit()
         except sqlite3.IntegrityError as e:
@@ -258,8 +266,7 @@ def revoke_api_key(key_id: str, db_path: str = AUTH_DB_PATH) -> bool:
             UPDATE api_keys
             SET is_active = 0, revoked_at = ?
             WHERE key_id = ? AND is_active = 1;
-            """,
-            (_utc_now_iso(), key_id),
+            """,            (_utc_now_iso(), key_id),
         )
         conn.commit()
         return cur.rowcount > 0
