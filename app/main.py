@@ -3,12 +3,13 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Union
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
 
 from app.auth import ApiPrincipal, init_auth_db, require_scopes
 from app.settings import settings
@@ -22,11 +23,12 @@ ARTIFACTS_DIR = Path(settings.ARTIFACTS_DIR).resolve()
 MODEL_ID = settings.VLLM_MODEL
 
 # Load schema once at startup
-RECEIPT_FIELDS_V1_SCHEMA_PATH = SCHEMAS_DIR / "receipt_fields_v1.schema.json"
-RECEIPT_FIELDS_V1_SCHEMA = json.loads(RECEIPT_FIELDS_V1_SCHEMA_PATH.read_text(encoding="utf-8"))
-RECEIPT_FIELDS_V1_VALIDATOR = Draft202012Validator(RECEIPT_FIELDS_V1_SCHEMA)
+SCHEMA_PATH = SCHEMAS_DIR / "receipt_fields_v1.schema.json"
+SCHEMA_VALUE = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+SCHEMA_NAME = 'default_schema_receipt_fields_v1'
 
-PROMPT_RECEIPT_FIELDS_V1 = (PROMPTS_DIR / "receipt_fields_v1.txt").read_text(encoding="utf-8").strip()
+PROMPT_VALUE = (PROMPTS_DIR / "receipt_fields_v1.txt").read_text(encoding="utf-8").strip()
+PROMPT_NAME = 'default_prompt_receipt_fields_v1'
 
 vllm = VLLMClient()
 
@@ -45,6 +47,7 @@ app = FastAPI(
 class DebugOptions(BaseModel):
     # Any debug usage requires DEBUG_MODE=1 (global env switch).
     prompt_override: Optional[str] = Field(default=None, description="Override the base prompt (DEBUG only).")
+    schema_override: Optional[str] = Field(default=None, description="Override schema of the response (DEBUG only).")
     temperature: Optional[float] = Field(default=None, ge=0.0, le=1.0, description="Override temperature (DEBUG only).")
     max_tokens: Optional[int] = Field(default=None, ge=1, description="Override max_tokens (DEBUG only).")
 
@@ -146,13 +149,14 @@ def _clamp_max_tokens(v: int) -> int:
 def _apply_debug_overrides(
     principal: ApiPrincipal,
     debug: Optional[DebugOptions],
-) -> Tuple[str, float, int]:
-    prompt_text = PROMPT_RECEIPT_FIELDS_V1
+) -> Tuple[str, float, int, Union[dict[str, Any], str, None]]:
+    prompt_text = PROMPT_VALUE
+    schema_json = SCHEMA_VALUE
     temperature = 0.0
     max_tokens = 128
 
     if debug is None:
-        return prompt_text, temperature, max_tokens
+        return prompt_text, temperature, max_tokens, schema_json
 
     _debug_allowed(principal)
 
@@ -163,6 +167,11 @@ def _apply_debug_overrides(
         if p:
             prompt_text = p
 
+    if debug.schema_override is not None:
+        s = debug.schema_override.strip()
+        if s:
+            schema_json = s
+
     if debug.temperature is not None:
         temperature = float(debug.temperature)
 
@@ -170,7 +179,7 @@ def _apply_debug_overrides(
         max_tokens = int(debug.max_tokens)
 
     max_tokens = _clamp_max_tokens(max_tokens)
-    return prompt_text, temperature, max_tokens
+    return prompt_text, temperature, max_tokens, schema_json
 
 
 def _resolve_ref(ref: str, root_schema: Dict[str, Any]) -> Dict[str, Any]:
@@ -251,6 +260,7 @@ def _mock_chat_completions(
     request_id: str,
     principal: ApiPrincipal,
     debug: Optional[DebugOptions],
+    schema_dict: Optional[dict[str, Any]],
 ) -> Dict[str, Any]:
     mode = "ok"
     if request_id.startswith("fail_json"):
@@ -271,8 +281,11 @@ def _mock_chat_completions(
     elif mode == "fail_schema":
         content = "{}"
     else:
-        sample = _sample_from_schema(RECEIPT_FIELDS_V1_SCHEMA, RECEIPT_FIELDS_V1_SCHEMA)
-        content = json.dumps(sample, ensure_ascii=False)
+        if schema_dict is None:
+            content = json.dumps({"mock": True, "schema_used": False}, ensure_ascii=False)
+        else:
+            sample = _sample_from_schema(schema_dict, schema_dict)
+            content = json.dumps(sample, ensure_ascii=False)
 
     return {"choices": [{"message": {"content": content}}]}
 
@@ -289,14 +302,64 @@ def _build_messages(prompt_text: str, req: ExtractReceiptFieldsRequest) -> Any:
     ]
 
 
-def _build_response_format() -> Any:
+def _normalize_schema(schema: Union[dict[str, Any], str, None]) -> Optional[dict[str, Any]]:
+    if schema is None:
+        return SCHEMA_VALUE
+
+    if isinstance(schema, dict):
+        return schema
+
+    if isinstance(schema, str):
+        s = schema.strip().lower()
+        if s in {"none", "null"}:
+            return None
+
+        try:
+            parsed = json.loads(schema)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail=f"schema is a string but not valid JSON: {schema!r}")
+
+        if not isinstance(parsed, dict):
+            raise HTTPException(status_code=400, detail=f"schema JSON must decode to dict, got {type(parsed).__name__}")
+
+        return parsed
+
+    raise HTTPException(
+        status_code=400,
+        detail=f"schema must be dict | json-str | 'none' | None, got {type(schema).__name__}",
+    )
+
+
+def _build_response_format(schema_dict: dict[str, Any], schema_name: Optional[str] = None) -> dict[str, Any]:
     return {
         "type": "json_schema",
         "json_schema": {
-            "name": "receipt_fields_v1",
-            "schema": RECEIPT_FIELDS_V1_SCHEMA,
+            "name": schema_name if schema_name is not None else SCHEMA_NAME,
+            "schema": schema_dict,
         },
     }
+
+
+def _make_validator_or_raise(schema_dict: dict[str, Any], *, is_custom_schema: bool) -> Draft202012Validator:
+    """
+    Возвращает Draft202012Validator, но если schema_dict не является валидной JSON Schema,
+    возвращает понятную HTTP-ошибку (400 для кастомной, 500 для дефолтной).
+    """
+    try:
+        Draft202012Validator.check_schema(schema_dict)
+    except SchemaError as e:
+        msg = getattr(e, "message", str(e))
+        if is_custom_schema:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON schema in schema_override: {msg}")
+        raise HTTPException(status_code=500, detail=f"Server misconfiguration: invalid default schema: {msg}")
+
+    try:
+        return Draft202012Validator(schema_dict)
+    except Exception as e:
+        if is_custom_schema:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON schema in schema_override: {e}")
+        raise HTTPException(status_code=500, detail=f"Server misconfiguration: invalid default schema: {e}")
+
 
 
 @app.get("/health")
@@ -324,10 +387,14 @@ async def dry_run_extract(
     _debug_allowed(principal)
 
     request_id = _make_request_id(req.request_id)
-    prompt_text, temperature, max_tokens = _apply_debug_overrides(principal, req.debug)
+    prompt_text, temperature, max_tokens, schema_json = _apply_debug_overrides(principal, req.debug)
 
     messages = _build_messages(prompt_text, req)
-    response_format = _build_response_format()
+    schema_dict = _normalize_schema(schema_json)  
+    is_custom_schema = bool(req.debug and req.debug.schema_override and req.debug.schema_override.strip())
+    schema_name = "custom_schema" if is_custom_schema else None
+    response_format = _build_response_format(schema_dict, schema_name=schema_name) if schema_dict is not None else None
+
 
     return DryRunResponse(
         request_id=request_id,
@@ -348,16 +415,21 @@ async def extract_receipt_fields(
     request_id = _make_request_id(req.request_id)
     t0 = time.perf_counter()
 
-    prompt_text, temperature, max_tokens = _apply_debug_overrides(principal, req.debug)
+    prompt_text, temperature, max_tokens, schema_json = _apply_debug_overrides(principal, req.debug)
     messages = _build_messages(prompt_text, req)
-    response_format = _build_response_format()
+
+    schema_dict = _normalize_schema(schema_json)  
+    is_custom_schema = bool(req.debug and req.debug.schema_override and req.debug.schema_override.strip())
+    schema_name = "custom_schema" if is_custom_schema else None
+    response_format = _build_response_format(schema_dict, schema_name=schema_name) if schema_dict is not None else None
 
     backend = settings.INFERENCE_BACKEND.strip().lower()
 
     try:
         t_inf0 = time.perf_counter()
         if backend == "mock":
-            raw = _mock_chat_completions(request_id, principal, req.debug)
+            raw = _mock_chat_completions(request_id, principal, req.debug, schema_dict=schema_dict)
+
         else:
             raw = await vllm.chat_completions(
                 model=MODEL_ID,
@@ -399,10 +471,16 @@ async def extract_receipt_fields(
         if _raw_allowed(principal):
             raise HTTPException(status_code=502, detail=f"Model returned invalid JSON. Artifact: {artifact_path}")
         raise HTTPException(status_code=502, detail="Model returned invalid JSON.")
-
-    errors = [e.message for e in RECEIPT_FIELDS_V1_VALIDATOR.iter_errors(parsed)]
-    schema_ok = len(errors) == 0
-
+    
+    if schema_dict is None:
+        schema_ok = True
+        errors = []
+    else:
+        schema_json_validator = _make_validator_or_raise(schema_dict, is_custom_schema=is_custom_schema)
+        errors = [e.message for e in schema_json_validator.iter_errors(parsed)]
+        schema_ok = len(errors) == 0
+    
+    
     _save_artifact(
         request_id,
         {
@@ -411,7 +489,7 @@ async def extract_receipt_fields(
             "inference_backend": backend,
             "input": req.model_dump(),
             "auth": {"key_id": principal.key_id, "role": principal.role},
-            "schema": "receipt_fields_v1",
+            "schema": None if schema_dict is None else json.dumps(schema_dict, ensure_ascii=False),
             "schema_ok": schema_ok,
             "schema_errors": errors,
             "raw_model_text": raw_text,
