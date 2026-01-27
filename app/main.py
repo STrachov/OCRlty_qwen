@@ -1,12 +1,13 @@
 import json
+import re
 import time
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, Union
-from contextlib import asynccontextmanager
+from typing import Any, Dict, Optional, Tuple, Union, List
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
@@ -22,20 +23,103 @@ PROMPTS_DIR = APP_ROOT / "prompts"
 ARTIFACTS_DIR = Path(settings.ARTIFACTS_DIR).resolve()
 MODEL_ID = settings.VLLM_MODEL
 
-# Load schema once at startup
-SCHEMA_PATH = SCHEMAS_DIR / "receipt_fields_v1.schema.json"
-SCHEMA_VALUE = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
-SCHEMA_NAME = 'default_schema_receipt_fields_v1'
+# ---------------------------
+# Tasks (p.4)
+# ---------------------------
 
-PROMPT_VALUE = (PROMPTS_DIR / "receipt_fields_v1.txt").read_text(encoding="utf-8").strip()
-PROMPT_NAME = 'default_prompt_receipt_fields_v1'
+TASK_SPECS: Dict[str, Dict[str, str]] = {
+    # Existing default task
+    "receipt_fields_v1": {
+        "schema_file": "receipt_fields_v1.schema.json",
+        "schema_name": "default_schema_receipt_fields_v1",
+        "prompt_file": "receipt_fields_v1.txt",
+        "prompt_name": "default_prompt_receipt_fields_v1",
+    },
+    # New tasks (add files under app/schemas and app/prompts)
+    "payment_v1": {
+        "schema_file": "payment_v1.schema.json",
+        "schema_name": "payment_v1",
+        "prompt_file": "payment_v1.txt",
+        "prompt_name": "payment_v1",
+    },
+    "items_light_v1": {
+        "schema_file": "items_light_v1.schema.json",
+        "schema_name": "items_light_v1",
+        "prompt_file": "items_light_v1.txt",
+        "prompt_name": "items_light_v1",
+    },
+}
+
+# task_id -> runtime payload
+_TASKS: Dict[str, Dict[str, Any]] = {}
+_TASK_LOAD_ERRORS: Dict[str, str] = {}
+
+
+def _load_task_or_error(task_id: str) -> None:
+    spec = TASK_SPECS[task_id]
+    schema_path = SCHEMAS_DIR / spec["schema_file"]
+    prompt_path = PROMPTS_DIR / spec["prompt_file"]
+    try:
+        schema_value = json.loads(schema_path.read_text(encoding="utf-8"))
+        prompt_value = prompt_path.read_text(encoding="utf-8").strip()
+    except Exception as e:
+        _TASK_LOAD_ERRORS[task_id] = f"{e.__class__.__name__}: {e}"
+        return
+
+    _TASKS[task_id] = {
+        "task_id": task_id,
+        "schema_value": schema_value,
+        "schema_name": spec["schema_name"],
+        "prompt_value": prompt_value,
+        "prompt_name": spec["prompt_name"],
+    }
+
+
+def _load_tasks() -> None:
+    _TASKS.clear()
+    _TASK_LOAD_ERRORS.clear()
+
+    for task_id in TASK_SPECS.keys():
+        _load_task_or_error(task_id)
+
+    # Default task must exist; otherwise the service isn't usable.
+    if "receipt_fields_v1" in _TASK_LOAD_ERRORS:
+        raise RuntimeError(
+            "Failed to load default task receipt_fields_v1: "
+            f"{_TASK_LOAD_ERRORS['receipt_fields_v1']}"
+        )
+
+
+def _get_task(task_id: str) -> Dict[str, Any]:
+    task_id = (task_id or "").strip()
+    if not task_id:
+        raise HTTPException(status_code=400, detail="task_id is empty.")
+    if task_id not in TASK_SPECS:
+        raise HTTPException(status_code=400, detail=f"Unknown task_id: {task_id!r}. Allowed: {sorted(TASK_SPECS.keys())}")
+    if task_id in _TASK_LOAD_ERRORS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Task files are missing or invalid for task_id={task_id!r}: "
+                f"{_TASK_LOAD_ERRORS[task_id]}"
+            ),
+        )
+    return _TASKS[task_id]
+
+
+# ---------------------------
+# App lifecycle
+# ---------------------------
 
 vllm = VLLMClient()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_auth_db()
+    _load_tasks()
     yield
+
 
 app = FastAPI(
     title="Qwen3-VL Orchestrator",
@@ -44,10 +128,17 @@ app = FastAPI(
 )
 
 
+# ---------------------------
+# Models
+# ---------------------------
+
 class DebugOptions(BaseModel):
     # Any debug usage requires DEBUG_MODE=1 (global env switch).
     prompt_override: Optional[str] = Field(default=None, description="Override the base prompt (DEBUG only).")
-    schema_override: Optional[str] = Field(default=None, description="Override schema of the response (DEBUG only).")
+    schema_override: Optional[str] = Field(
+        default=None,
+        description="Override schema (JSON string), or 'none'/'null' to disable schema enforcement (DEBUG only).",
+    )
     temperature: Optional[float] = Field(default=None, ge=0.0, le=1.0, description="Override temperature (DEBUG only).")
     max_tokens: Optional[int] = Field(default=None, ge=1, description="Override max_tokens (DEBUG only).")
 
@@ -63,7 +154,8 @@ class DebugOptions(BaseModel):
     )
 
 
-class ExtractReceiptFieldsRequest(BaseModel):
+class ExtractRequest(BaseModel):
+    task_id: str = Field(default="receipt_fields_v1", description="Which extraction task to run.")
     # Provide either image_url OR image_base64.
     image_url: Optional[str] = None
     image_base64: Optional[str] = None
@@ -74,9 +166,11 @@ class ExtractReceiptFieldsRequest(BaseModel):
     debug: Optional[DebugOptions] = None
 
 
-class ExtractReceiptFieldsResponse(BaseModel):
+class ExtractResponse(BaseModel):
     request_id: str
+    task_id: str
     model: str
+
     schema_ok: bool
     result: Dict[str, Any]
     timings_ms: Dict[str, float]
@@ -86,18 +180,34 @@ class ExtractReceiptFieldsResponse(BaseModel):
     raw_model_text: Optional[str] = None
 
 
-class DryRunResponse(BaseModel):
+class ArtifactListItem(BaseModel):
     request_id: str
-    model: str
-    inference_backend: str
-    temperature: float
-    max_tokens: int
-    messages: Any
-    response_format: Any
+    date: str
+    task_id: Optional[str] = None
+    schema_ok: Optional[bool] = None
+
+
+class ArtifactListResponse(BaseModel):
+    items: List[ArtifactListItem]
+
+
+# ---------------------------
+# Helpers
+# ---------------------------
+
+_REQUEST_ID_SAFE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 
 def _make_request_id(user_request_id: Optional[str]) -> str:
     return user_request_id or uuid.uuid4().hex
+
+
+def _validate_request_id_for_fs(request_id: str) -> None:
+    if not _REQUEST_ID_SAFE.match(request_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid request_id for artifact lookup (allowed: A-Za-z0-9_.-, max 128 chars).",
+        )
 
 
 def _ensure_artifacts_dir() -> Path:
@@ -134,6 +244,12 @@ def _debug_allowed(principal: ApiPrincipal) -> None:
         raise HTTPException(status_code=403, detail="Missing required scope: debug:run")
 
 
+def _require_debug_read_raw(principal: ApiPrincipal) -> None:
+    _debug_enabled_or_403()
+    if settings.AUTH_ENABLED and ("debug:read_raw" not in principal.scopes):
+        raise HTTPException(status_code=403, detail="Missing required scope: debug:read_raw")
+
+
 def _raw_allowed(principal: ApiPrincipal) -> bool:
     if not settings.DEBUG_MODE:
         return False
@@ -149,9 +265,12 @@ def _clamp_max_tokens(v: int) -> int:
 def _apply_debug_overrides(
     principal: ApiPrincipal,
     debug: Optional[DebugOptions],
+    *,
+    base_prompt_text: str,
+    base_schema_json: dict[str, Any],
 ) -> Tuple[str, float, int, Union[dict[str, Any], str, None]]:
-    prompt_text = PROMPT_VALUE
-    schema_json = SCHEMA_VALUE
+    prompt_text = base_prompt_text
+    schema_json: Union[dict[str, Any], str, None] = base_schema_json
     temperature = 0.0
     max_tokens = 128
 
@@ -290,7 +409,7 @@ def _mock_chat_completions(
     return {"choices": [{"message": {"content": content}}]}
 
 
-def _build_messages(prompt_text: str, req: ExtractReceiptFieldsRequest) -> Any:
+def _build_messages(prompt_text: str, req: ExtractRequest) -> Any:
     return [
         {
             "role": "user",
@@ -302,9 +421,9 @@ def _build_messages(prompt_text: str, req: ExtractReceiptFieldsRequest) -> Any:
     ]
 
 
-def _normalize_schema(schema: Union[dict[str, Any], str, None]) -> Optional[dict[str, Any]]:
+def _normalize_schema(schema: Union[dict[str, Any], str, None], default_schema: dict[str, Any]) -> Optional[dict[str, Any]]:
     if schema is None:
-        return SCHEMA_VALUE
+        return default_schema
 
     if isinstance(schema, dict):
         return schema
@@ -330,21 +449,17 @@ def _normalize_schema(schema: Union[dict[str, Any], str, None]) -> Optional[dict
     )
 
 
-def _build_response_format(schema_dict: dict[str, Any], schema_name: Optional[str] = None) -> dict[str, Any]:
+def _build_response_format(schema_dict: dict[str, Any], schema_name: str) -> dict[str, Any]:
     return {
         "type": "json_schema",
         "json_schema": {
-            "name": schema_name if schema_name is not None else SCHEMA_NAME,
+            "name": schema_name,
             "schema": schema_dict,
         },
     }
 
 
 def _make_validator_or_raise(schema_dict: dict[str, Any], *, is_custom_schema: bool) -> Draft202012Validator:
-    """
-    Возвращает Draft202012Validator, но если schema_dict не является валидной JSON Schema,
-    возвращает понятную HTTP-ошибку (400 для кастомной, 500 для дефолтной).
-    """
     try:
         Draft202012Validator.check_schema(schema_dict)
     except SchemaError as e:
@@ -361,17 +476,82 @@ def _make_validator_or_raise(schema_dict: dict[str, Any], *, is_custom_schema: b
         raise HTTPException(status_code=500, detail=f"Server misconfiguration: invalid default schema: {e}")
 
 
+# ---------------------------
+# Artifacts (p.2)
+# ---------------------------
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _iter_artifact_days_desc() -> List[str]:
+    if not ARTIFACTS_DIR.exists():
+        return []
+    days = []
+    for p in ARTIFACTS_DIR.iterdir():
+        if p.is_dir() and _DATE_RE.match(p.name):
+            days.append(p.name)
+    days.sort(reverse=True)
+    return days
+
+
+def _find_artifact_path(request_id: str, *, date: Optional[str] = None, max_days: int = 30) -> Optional[Path]:
+    _validate_request_id_for_fs(request_id)
+
+    if date is not None:
+        if not _DATE_RE.match(date):
+            raise HTTPException(status_code=400, detail="date must be in YYYY-MM-DD format.")
+        p = ARTIFACTS_DIR / date / f"{request_id}.json"
+        return p if p.exists() else None
+
+    days = _iter_artifact_days_desc()[: max(1, int(max_days))]
+    for d in days:
+        p = ARTIFACTS_DIR / d / f"{request_id}.json"
+        if p.exists():
+            return p
+    return None
+
+
+def _artifact_date_from_path(p: Path) -> Optional[str]:
+    # /.../artifacts/YYYY-MM-DD/<id>.json
+    try:
+        return p.parent.name
+    except Exception:
+        return None
+
+
+def _read_artifact_json(p: Path) -> Dict[str, Any]:
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read artifact JSON: {e}")
+
+
+# ---------------------------
+# Routes
+# ---------------------------
 
 @app.get("/health")
 async def health() -> Dict[str, Any]:
-    if settings.INFERENCE_BACKEND.strip().lower() == "mock":
-        return {"ok": True, "inference_backend": "mock", "vllm_ok": None}
+    backend = settings.INFERENCE_BACKEND.strip().lower()
+    out: Dict[str, Any] = {"ok": True, "inference_backend": backend}
+
+    # show tasks status
+    out["tasks_available"] = sorted(list(_TASKS.keys()))
+    out["tasks_missing"] = dict(_TASK_LOAD_ERRORS)
+
+    if backend == "mock":
+        out["vllm_ok"] = None
+        return out
 
     try:
         models = await vllm.models()
-        return {"ok": True, "inference_backend": "vllm", "vllm_ok": True, "models": [m["id"] for m in models.get("data", [])]}
+        out["vllm_ok"] = True
+        out["models"] = [m.get("id") for m in models.get("data", [])]
+        return out
     except Exception as e:
-        return {"ok": True, "inference_backend": "vllm", "vllm_ok": False, "error": str(e)}
+        out["vllm_ok"] = False
+        out["error"] = str(e)
+        return out
 
 
 @app.get("/v1/me")
@@ -379,48 +559,123 @@ async def me(principal: ApiPrincipal = Depends(require_scopes([]))):
     return {"key_id": principal.key_id, "role": principal.role, "scopes": sorted(list(principal.scopes))}
 
 
-@app.post("/v1/debug/dry-run", response_model=DryRunResponse)
-async def dry_run_extract(
-    req: ExtractReceiptFieldsRequest,
-    principal: ApiPrincipal = Depends(require_scopes(["debug:run"])),
-) -> DryRunResponse:
-    _debug_allowed(principal)
+# --- p.2: debug artifact viewing ---
 
-    request_id = _make_request_id(req.request_id)
-    prompt_text, temperature, max_tokens, schema_json = _apply_debug_overrides(principal, req.debug)
+@app.get("/v1/debug/artifacts", response_model=ArtifactListResponse)
+async def list_artifacts(
+    date: Optional[str] = Query(default=None, description="Filter by day (YYYY-MM-DD). If omitted, returns most recent items across days."),
+    limit: int = Query(default=50, ge=1, le=500),
+    principal: ApiPrincipal = Depends(require_scopes(["debug:read_raw"])),
+) -> ArtifactListResponse:
+    _require_debug_read_raw(principal)
 
-    messages = _build_messages(prompt_text, req)
-    schema_dict = _normalize_schema(schema_json)  
-    is_custom_schema = bool(req.debug and req.debug.schema_override and req.debug.schema_override.strip())
-    schema_name = "custom_schema" if is_custom_schema else None
-    response_format = _build_response_format(schema_dict, schema_name=schema_name) if schema_dict is not None else None
+    items: List[ArtifactListItem] = []
+
+    if date is not None:
+        if not _DATE_RE.match(date):
+            raise HTTPException(status_code=400, detail="date must be in YYYY-MM-DD format.")
+        day_dir = ARTIFACTS_DIR / date
+        if not day_dir.exists():
+            return ArtifactListResponse(items=[])
+
+        files = sorted(day_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for p in files[:limit]:
+            rid = p.stem
+            meta = ArtifactListItem(request_id=rid, date=date)
+            # best-effort parse minimal fields
+            try:
+                data = _read_artifact_json(p)
+                meta.task_id = data.get("task_id")
+                meta.schema_ok = data.get("schema_ok")
+            except Exception:
+                pass
+            items.append(meta)
+
+        return ArtifactListResponse(items=items)
+
+    # no date: walk recent day folders and collect
+    for d in _iter_artifact_days_desc():
+        day_dir = ARTIFACTS_DIR / d
+        files = sorted(day_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for p in files:
+            rid = p.stem
+            meta = ArtifactListItem(request_id=rid, date=d)
+            try:
+                data = _read_artifact_json(p)
+                meta.task_id = data.get("task_id")
+                meta.schema_ok = data.get("schema_ok")
+            except Exception:
+                pass
+            items.append(meta)
+            if len(items) >= limit:
+                return ArtifactListResponse(items=items)
+
+    return ArtifactListResponse(items=items)
 
 
-    return DryRunResponse(
-        request_id=request_id,
-        model=MODEL_ID,
-        inference_backend=settings.INFERENCE_BACKEND.strip().lower(),
-        temperature=temperature,
-        max_tokens=max_tokens,
-        messages=messages,
-        response_format=response_format,
-    )
+@app.get("/v1/debug/artifacts/{request_id}")
+async def read_artifact(
+    request_id: str,
+    date: Optional[str] = Query(default=None, description="Optional day (YYYY-MM-DD) to avoid search."),
+    principal: ApiPrincipal = Depends(require_scopes(["debug:read_raw"])),
+) -> Dict[str, Any]:
+    _require_debug_read_raw(principal)
+
+    p = _find_artifact_path(request_id, date=date)
+    if p is None:
+        raise HTTPException(status_code=404, detail="Artifact not found.")
+    data = _read_artifact_json(p)
+    # include a tiny bit of metadata without absolute paths
+    return {
+        "request_id": request_id,
+        "date": _artifact_date_from_path(p),
+        "artifact": data,
+    }
 
 
-@app.post("/v1/extract", response_model=ExtractReceiptFieldsResponse)
-async def extract_receipt_fields(
-    req: ExtractReceiptFieldsRequest,
+@app.get("/v1/debug/artifacts/{request_id}/raw")
+async def read_artifact_raw_text(
+    request_id: str,
+    date: Optional[str] = Query(default=None, description="Optional day (YYYY-MM-DD) to avoid search."),
+    principal: ApiPrincipal = Depends(require_scopes(["debug:read_raw"])),
+) -> Dict[str, Any]:
+    _require_debug_read_raw(principal)
+
+    p = _find_artifact_path(request_id, date=date)
+    if p is None:
+        raise HTTPException(status_code=404, detail="Artifact not found.")
+    data = _read_artifact_json(p)
+    return {
+        "request_id": request_id,
+        "date": _artifact_date_from_path(p),
+        "raw_model_text": data.get("raw_model_text"),
+    }
+
+
+# --- p.4: extract with task_id ---
+
+@app.post("/v1/extract", response_model=ExtractResponse)
+async def extract(
+    req: ExtractRequest,
     principal: ApiPrincipal = Depends(require_scopes(["extract:run"])),
-) -> ExtractReceiptFieldsResponse:
+) -> ExtractResponse:
+    task = _get_task(req.task_id)
+
     request_id = _make_request_id(req.request_id)
     t0 = time.perf_counter()
 
-    prompt_text, temperature, max_tokens, schema_json = _apply_debug_overrides(principal, req.debug)
+    prompt_text, temperature, max_tokens, schema_json = _apply_debug_overrides(
+        principal,
+        req.debug,
+        base_prompt_text=task["prompt_value"],
+        base_schema_json=task["schema_value"],
+    )
+
     messages = _build_messages(prompt_text, req)
 
-    schema_dict = _normalize_schema(schema_json)  
+    schema_dict = _normalize_schema(schema_json, default_schema=task["schema_value"])
     is_custom_schema = bool(req.debug and req.debug.schema_override and req.debug.schema_override.strip())
-    schema_name = "custom_schema" if is_custom_schema else None
+    schema_name = "custom_schema" if is_custom_schema else task["schema_name"]
     response_format = _build_response_format(schema_dict, schema_name=schema_name) if schema_dict is not None else None
 
     backend = settings.INFERENCE_BACKEND.strip().lower()
@@ -429,7 +684,6 @@ async def extract_receipt_fields(
         t_inf0 = time.perf_counter()
         if backend == "mock":
             raw = _mock_chat_completions(request_id, principal, req.debug, schema_dict=schema_dict)
-
         else:
             raw = await vllm.chat_completions(
                 model=MODEL_ID,
@@ -455,6 +709,7 @@ async def extract_receipt_fields(
             request_id,
             {
                 "request_id": request_id,
+                "task_id": req.task_id,
                 "model": MODEL_ID,
                 "inference_backend": backend,
                 "input": req.model_dump(),
@@ -471,20 +726,20 @@ async def extract_receipt_fields(
         if _raw_allowed(principal):
             raise HTTPException(status_code=502, detail=f"Model returned invalid JSON. Artifact: {artifact_path}")
         raise HTTPException(status_code=502, detail="Model returned invalid JSON.")
-    
+
     if schema_dict is None:
         schema_ok = True
-        errors = []
+        errors: list[str] = []
     else:
         schema_json_validator = _make_validator_or_raise(schema_dict, is_custom_schema=is_custom_schema)
         errors = [e.message for e in schema_json_validator.iter_errors(parsed)]
         schema_ok = len(errors) == 0
-    
-    
+
     _save_artifact(
         request_id,
         {
             "request_id": request_id,
+            "task_id": req.task_id,
             "model": MODEL_ID,
             "inference_backend": backend,
             "input": req.model_dump(),
@@ -504,8 +759,9 @@ async def extract_receipt_fields(
 
     raw_out = raw_text if _raw_allowed(principal) else None
 
-    return ExtractReceiptFieldsResponse(
+    return ExtractResponse(
         request_id=request_id,
+        task_id=req.task_id,
         model=MODEL_ID,
         schema_ok=schema_ok,
         result=parsed if isinstance(parsed, dict) else {"_parsed": parsed},

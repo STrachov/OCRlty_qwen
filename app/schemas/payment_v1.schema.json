@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "payment_v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "total": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "description": "Total amount on the receipt."
+    },
+    "currency": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Currency code/symbol, e.g. EUR, UAH."
+    },
+    "cash": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "description": "Amount paid in cash (if present)."
+    },
+    "card": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "description": "Amount paid by card (if present)."
+    },
+    "change": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "description": "Change given back to customer (if present)."
+    },
+    "paid_amount": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "description": "Amount tendered by customer (if present)."
+    },
+    "payment_method": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "cash | card | mixed | unknown."
+    }
+  },
+  "required": [
+    "total"
+  ]
+}

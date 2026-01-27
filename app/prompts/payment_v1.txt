@@ -1,0 +1,14 @@
+You are given an image of a receipt.
+Extract payment-related fields and return ONLY a JSON object with the following keys:
+  - total: number or null
+  - currency: string or null
+  - cash: number or null (amount paid in cash, if present)
+  - card: number or null (amount paid by card, if present)
+  - change: number or null (change given back, if present)
+  - paid_amount: number or null (amount tendered by customer, if present)
+  - payment_method: string or null (cash | card | mixed | unknown)
+
+Rules:
+- Return JSON only (no extra text).
+- Use null when the value is not present or cannot be determined.
+- Use dot as decimal separator.

@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "items_light_v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Item description/name."
+          },
+          "qty": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Quantity (if present)."
+          },
+          "unit_price": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Unit price (if present)."
+          },
+          "line_total": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Line total for the item (if present)."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    "total": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "description": "Total amount on the receipt (if present)."
+    },
+    "currency": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Currency code/symbol, e.g. EUR, UAH."
+    }
+  },
+  "required": [
+    "items"
+  ]
+}

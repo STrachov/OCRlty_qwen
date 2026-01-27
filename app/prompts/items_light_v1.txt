@@ -1,0 +1,15 @@
+You are given an image of a receipt.
+Extract purchased items and return ONLY a JSON object with the following keys:
+  - items: array of objects, each with:
+      - name: string (required)
+      - qty: number or null
+      - unit_price: number or null
+      - line_total: number or null
+  - total: number or null
+  - currency: string or null
+
+Rules:
+- Return JSON only (no extra text).
+- Keep the items in the order they appear on the receipt.
+- Use null when a value is not present or cannot be determined.
+- Use dot as decimal separator.
