@@ -1,9 +1,14 @@
+import asyncio
+import base64
+import hashlib
 import json
+import mimetypes
+import os
 import re
 import time
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union, List
 
@@ -19,6 +24,11 @@ from app.vllm_client import VLLMClient
 APP_ROOT = Path(__file__).resolve().parent
 SCHEMAS_DIR = APP_ROOT / "schemas"
 PROMPTS_DIR = APP_ROOT / "prompts"
+
+# Data root for server-side batch runs.
+# By convention in this repo: /workspace/src/data
+DATA_ROOT = APP_ROOT.parent.resolve()
+DEFAULT_IMAGES_DIR = str((DATA_ROOT / "data").resolve())
 
 ARTIFACTS_DIR = Path(settings.ARTIFACTS_DIR).resolve()
 MODEL_ID = settings.VLLM_MODEL
@@ -159,6 +169,7 @@ class ExtractRequest(BaseModel):
     # Provide either image_url OR image_base64.
     image_url: Optional[str] = None
     image_base64: Optional[str] = None
+    image_ref: Optional[str] = Field(default=None, description="Optional reference to the source image (e.g., relative path). Stored in artifacts only.")
     mime_type: str = Field(default="image/png", description="Used only with image_base64.")
     request_id: Optional[str] = None
 
@@ -190,6 +201,31 @@ class ArtifactListItem(BaseModel):
 class ArtifactListResponse(BaseModel):
     items: List[ArtifactListItem]
 
+class BatchExtractRequest(BaseModel):
+    task_id: str = Field(default="receipt_fields_v1", description="Which extraction task to run for all images.")
+    images_dir: str = Field(default=DEFAULT_IMAGES_DIR, description="Server-side directory with images (must be under /workspace/src).")
+    glob: str = Field(default="**/*", description="Glob pattern relative to images_dir.")
+    exts: List[str] = Field(default_factory=lambda: ["png", "jpg", "jpeg", "webp"], description="Allowed file extensions (without dot).")
+    limit: Optional[int] = Field(default=None, ge=1, description="Optional max number of images to process.")
+    concurrency: int = Field(default=4, ge=1, le=32, description="Number of concurrent requests within this process.")
+    run_id: Optional[str] = Field(default=None, description="Optional run id (used to build per-image request_id).")
+
+
+class BatchExtractResponse(BaseModel):
+    run_id: str
+    task_id: str
+    images_dir: str
+
+    total: int
+    ok: int
+    failed: int
+    schema_ok: int
+    schema_failed: int
+
+    timings_ms: Dict[str, float]
+    batch_artifact_path: str
+
+
 
 # ---------------------------
 # Helpers
@@ -206,25 +242,97 @@ def _validate_request_id_for_fs(request_id: str) -> None:
     if not _REQUEST_ID_SAFE.match(request_id):
         raise HTTPException(
             status_code=400,
-            detail="Invalid request_id for artifact lookup (allowed: A-Za-z0-9_.-, max 128 chars).",
+            detail="Invalid request_id (allowed: A-Za-z0-9_.-, max 128 chars).",
         )
 
 
 def _ensure_artifacts_dir() -> Path:
-    day = datetime.utcnow().strftime("%Y-%m-%d")
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     out_dir = ARTIFACTS_DIR / day
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir
 
 
 def _save_artifact(request_id: str, payload: Dict[str, Any]) -> str:
+    _validate_request_id_for_fs(request_id)
     out_dir = _ensure_artifacts_dir()
     path = out_dir / f"{request_id}.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return str(path)
 
 
+
+def _ensure_batch_artifacts_dir() -> Path:
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    out_dir = ARTIFACTS_DIR / "batches" / day
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir
+
+
+def _save_batch_artifact(run_id: str, payload: Dict[str, Any]) -> str:
+    _validate_request_id_for_fs(run_id)
+    out_dir = _ensure_batch_artifacts_dir()
+    path = out_dir / f"{run_id}.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return str(path)
+
+
+def _validate_under_data_root(p: Path) -> Path:
+    try:
+        p_rel = p.resolve().relative_to(DATA_ROOT)
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Path must be under data root {str(DATA_ROOT)!r}. Got: {str(p)!r}",
+        )
+    return DATA_ROOT / p_rel
+
+
+def _list_image_files(images_dir: Path, glob_pattern: str, exts: List[str], limit: Optional[int]) -> List[Path]:
+    if not images_dir.exists() or not images_dir.is_dir():
+        raise HTTPException(status_code=400, detail=f"images_dir does not exist or is not a directory: {str(images_dir)!r}")
+
+    allowed = {("." + e.lower().lstrip(".")) for e in (exts or [])}
+    files: List[Path] = []
+    for p in images_dir.glob(glob_pattern or "**/*"):
+        if not p.is_file():
+            continue
+        if allowed and p.suffix.lower() not in allowed:
+            continue
+        files.append(p)
+
+    files.sort(key=lambda x: str(x))
+    if limit is not None:
+        files = files[: int(limit)]
+    return files
+
+
+def _default_run_id() -> str:
+    # Must match request_id regex and remain short.
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "_" + uuid.uuid4().hex[:6]
+
+
+def _make_batch_request_id(run_id: str, rel_path: str) -> str:
+    # Keep it stable and short: <run_id>__<base>_<hash8>
+    base = os.path.splitext(os.path.basename(rel_path))[0]
+    base = re.sub(r"[^A-Za-z0-9_.-]+", "_", base)[:40] or "img"
+    h = hashlib.sha1(rel_path.encode("utf-8")).hexdigest()[:8]
+    req_id = f"{run_id}__{base}_{h}"
+    if len(req_id) > 128:
+        req_id = req_id[:128]
+    _validate_request_id_for_fs(req_id)
+    return req_id
+
+
+def _guess_mime_type(path: Path) -> str:
+    mt, _ = mimetypes.guess_type(str(path))
+    return mt or "image/png"
+
+
 def _image_content(image_url: Optional[str], image_base64: Optional[str], mime_type: str) -> Dict[str, Any]:
+    if image_url and image_base64:
+        raise HTTPException(status_code=400, detail="Provide either image_url or image_base64 (not both).")
     if image_url:
         return {"type": "image_url", "image_url": {"url": image_url}}
     if image_base64:
@@ -232,6 +340,20 @@ def _image_content(image_url: Optional[str], image_base64: Optional[str], mime_t
         return {"type": "image_url", "image_url": {"url": data_url}}
     raise HTTPException(status_code=400, detail="Provide either image_url or image_base64.")
 
+
+
+def _sanitize_input_for_artifact(req: "ExtractRequest") -> Dict[str, Any]:
+    # Avoid storing large blobs (base64) in artifacts.
+    return {
+        "task_id": req.task_id,
+        "user_request_id": req.request_id,
+        "image_ref": req.image_ref,
+        "image_url": req.image_url,
+        "has_image_base64": bool(req.image_base64),
+        "image_base64_chars": len(req.image_base64) if req.image_base64 else 0,
+        "mime_type": req.mime_type,
+        "has_debug": bool(req.debug),
+    }
 
 def _debug_enabled_or_403() -> None:
     if not settings.DEBUG_MODE:
@@ -477,7 +599,7 @@ def _make_validator_or_raise(schema_dict: dict[str, Any], *, is_custom_schema: b
 
 
 # ---------------------------
-# Artifacts (p.2)
+# Artifacts 
 # ---------------------------
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -662,6 +784,12 @@ async def extract(
     task = _get_task(req.task_id)
 
     request_id = _make_request_id(req.request_id)
+    _validate_request_id_for_fs(request_id)
+
+    # image_url is allowed only as a DEBUG feature (DEBUG_MODE=1 and debug:run scope).
+    if req.image_url:
+        _debug_allowed(principal)
+
     t0 = time.perf_counter()
 
     prompt_text, temperature, max_tokens, schema_json = _apply_debug_overrides(
@@ -712,7 +840,7 @@ async def extract(
                 "task_id": req.task_id,
                 "model": MODEL_ID,
                 "inference_backend": backend,
-                "input": req.model_dump(),
+                "input": _sanitize_input_for_artifact(req),
                 "auth": {"key_id": principal.key_id, "role": principal.role},
                 "raw_response": raw,
                 "raw_model_text": raw_text,
@@ -742,7 +870,7 @@ async def extract(
             "task_id": req.task_id,
             "model": MODEL_ID,
             "inference_backend": backend,
-            "input": req.model_dump(),
+            "input": _sanitize_input_for_artifact(req),
             "auth": {"key_id": principal.key_id, "role": principal.role},
             "schema": None if schema_dict is None else json.dumps(schema_dict, ensure_ascii=False),
             "schema_ok": schema_ok,
@@ -771,4 +899,122 @@ async def extract(
             "total_ms": (time.perf_counter() - t0) * 1000.0,
         },
         schema_errors=errors if not schema_ok else None,
+    )
+
+
+# --- Batch extract (server-side folder) ---
+
+@app.post("/v1/batch_extract", response_model=BatchExtractResponse)
+async def batch_extract(
+    req: BatchExtractRequest,
+    principal: ApiPrincipal = Depends(require_scopes(["extract:run"])),
+) -> BatchExtractResponse:
+    # Validate task files early.
+    _get_task(req.task_id)
+
+    run_id = (req.run_id or _default_run_id()).strip()
+    _validate_request_id_for_fs(run_id)
+
+    images_dir = _validate_under_data_root(Path(req.images_dir).expanduser())
+    files = _list_image_files(images_dir, req.glob, req.exts, req.limit)
+
+    t0 = time.perf_counter()
+
+    sem = asyncio.Semaphore(int(req.concurrency))
+    items: List[Dict[str, Any]] = []
+
+    async def _process_one(p: Path) -> Dict[str, Any]:
+        rel_path = str(p.relative_to(images_dir)).replace("\\", "/")
+        request_id = _make_batch_request_id(run_id, rel_path)
+
+        async with sem:
+            try:
+                data = await asyncio.to_thread(p.read_bytes)
+                b64 = base64.b64encode(data).decode("ascii")
+                mime = _guess_mime_type(p)
+
+                sub_req = ExtractRequest(
+                    task_id=req.task_id,
+                    image_base64=b64,
+                    mime_type=mime,
+                    request_id=request_id,
+                    image_ref=rel_path,
+                    debug=None,
+                )
+
+                resp = await extract(sub_req, principal)  # reuse single-image logic
+                return {
+                    "file": rel_path,
+                    "request_id": resp.request_id,
+                    "ok": True,
+                    "schema_ok": resp.schema_ok,
+                    "timings_ms": resp.timings_ms,
+                }
+            except HTTPException as he:
+                return {
+                    "file": rel_path,
+                    "request_id": request_id,
+                    "ok": False,
+                    "schema_ok": False,
+                    "error": f"HTTP {he.status_code}: {he.detail}",
+                }
+            except Exception as e:
+                return {
+                    "file": rel_path,
+                    "request_id": request_id,
+                    "ok": False,
+                    "schema_ok": False,
+                    "error": f"{e.__class__.__name__}: {e}",
+                }
+
+    # Run
+    results = await asyncio.gather(*[_process_one(p) for p in files])
+    items.extend(results)
+
+    total = len(items)
+    ok = sum(1 for it in items if it.get("ok"))
+    failed = total - ok
+    schema_ok = sum(1 for it in items if it.get("ok") and it.get("schema_ok"))
+    schema_failed = sum(1 for it in items if it.get("ok") and (not it.get("schema_ok")))
+
+    t1 = time.perf_counter()
+
+    batch_artifact_path = _save_batch_artifact(
+        run_id,
+        {
+            "run_id": run_id,
+            "task_id": req.task_id,
+            "images_dir": str(images_dir),
+            "glob": req.glob,
+            "exts": req.exts,
+            "limit": req.limit,
+            "concurrency": req.concurrency,
+            "model": MODEL_ID,
+            "inference_backend": settings.INFERENCE_BACKEND.strip().lower(),
+            "auth": {"key_id": principal.key_id, "role": principal.role},
+            "summary": {
+                "total": total,
+                "ok": ok,
+                "failed": failed,
+                "schema_ok": schema_ok,
+                "schema_failed": schema_failed,
+            },
+            "timings_ms": {
+                "total_ms": (t1 - t0) * 1000.0,
+            },
+            "items": items,
+        },
+    )
+
+    return BatchExtractResponse(
+        run_id=run_id,
+        task_id=req.task_id,
+        images_dir=str(images_dir),
+        total=total,
+        ok=ok,
+        failed=failed,
+        schema_ok=schema_ok,
+        schema_failed=schema_failed,
+        timings_ms={"total_ms": (t1 - t0) * 1000.0},
+        batch_artifact_path=batch_artifact_path,
     )

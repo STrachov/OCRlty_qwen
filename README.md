@@ -8,7 +8,8 @@ This repo also includes a small **SQLite‑based API key system** (roles + scope
 
 ## Features
 
-- **/v1/extract**: send an image (URL or base64) → get a JSON object validated by `receipt_fields_v1.schema.json`
+- **/v1/extract**: send an image (**base64**; URL only in debug mode) → get a JSON object validated by `receipt_fields_v1.schema.json`
+- **/v1/batch_extract**: process a **local server folder** of images → get a batch summary + per-image artifacts
 - **Artifacts**: every request is persisted as JSON under `ARTIFACTS_DIR/YYYY-MM-DD/<request_id>.json`
 - **Auth with scopes** (SQLite):
   - `client`: `extract:run`
@@ -164,22 +165,11 @@ curl -s http://127.0.0.1:8080/v1/me \
   -H "Authorization: Bearer <SECRET>" | jq
 ```
 
-### 2) Extract fields (image URL)
+### 2) Extract fields (base64 image)
+
+Linux:
 
 ```bash
-curl -s http://127.0.0.1:8080/v1/extract \
-  -H "Authorization: Bearer <SECRET>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "request_id": "demo-001",
-    "image_url": "https://ofasys-multimodal-wlcb-3-toshanghai.oss-accelerate.aliyuncs.com/wpf272043/keepme/image/receipt.png"
-  }' | jq
-```
-
-### 3) Extract fields (base64 image)
-
-```bash
-# Linux/macOS example: create base64 without newlines
 B64=$(base64 -w 0 receipt.png)
 
 curl -s http://127.0.0.1:8080/v1/extract \
@@ -190,6 +180,79 @@ curl -s http://127.0.0.1:8080/v1/extract \
     "mime_type": "image/png",
     "image_base64": "'"$B64"'"
   }' | jq
+```
+
+macOS (BSD `base64`):
+
+```bash
+B64=$(base64 -b 0 receipt.png)
+
+curl -s http://127.0.0.1:8080/v1/extract \
+  -H "Authorization: Bearer <SECRET>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "request_id": "demo-002",
+    "mime_type": "image/png",
+    "image_base64": "'"$B64"'"
+  }' | jq
+```
+
+Windows PowerShell:
+
+```powershell
+$B64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes("receipt.png"))
+$headers = @{ Authorization = "Bearer <SECRET>" }
+$body = @{
+  request_id = "demo-002"
+  mime_type  = "image/png"
+  image_base64 = $B64
+} | ConvertTo-Json
+
+Invoke-RestMethod -Uri "http://127.0.0.1:8080/v1/extract" -Method Post -Headers $headers -Body $body -ContentType "application/json"
+```
+
+### 3) Extract fields (image URL — debug only)
+
+> Requires `DEBUG_MODE=1` **and** scope `debug:run`.
+
+```bash
+curl -s http://127.0.0.1:8080/v1/extract \
+  -H "Authorization: Bearer <DEBUGGER_OR_ADMIN_SECRET>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "request_id": "demo-001",
+    "image_url": "https://ofasys-multimodal-wlcb-3-toshanghai.oss-accelerate.aliyuncs.com/wpf272043/keepme/image/receipt.png"
+  }' | jq
+```
+
+### 4) Batch extract (server-side folder)
+
+Process a local folder of images on the server. The folder must be **inside** `/workspace/src` (DATA_ROOT).
+
+Defaults:
+- `images_dir`: `/workspace/src/data`
+- `glob`: `**/*`
+- `exts`: `["png","jpg","jpeg","webp"]`
+- `concurrency`: `4`
+
+```bash
+curl -s http://127.0.0.1:8080/v1/batch_extract \
+  -H "Authorization: Bearer <SECRET>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "task_id": "receipt_fields_v1",
+    "images_dir": "/workspace/src/data/receipts",
+    "concurrency": 4,
+    "limit": 100
+  }' | jq
+```
+
+The response returns a batch summary and the path to the batch artifact under:
+
+> The batch artifact stores per-file mapping (`file` → `request_id`), which is convenient for offline eval scripts.
+
+```
+ARTIFACTS_DIR/batches/YYYY-MM-DD/<run_id>.json
 ```
 
 ---
@@ -270,7 +333,8 @@ curl -s http://127.0.0.1:8080/v1/extract \
   -H "Content-Type: application/json" \
   -d '{
     "request_id": "fail_json-001",
-    "image_url": "https://ofasys-multimodal-wlcb-3-toshanghai.oss-accelerate.aliyuncs.com/wpf272043/keepme/image/receipt.png"
+    "mime_type": "image/png",
+    "image_base64": "<BASE64_NO_NEWLINES>"
   }' | jq
 ```
 
@@ -302,13 +366,76 @@ ARTIFACTS_DIR/YYYY-MM-DD/<request_id>.json
 ```
 
 Artifacts typically include:
-- request payload
+- request metadata (without base64 blobs)
 - model id / backend
 - raw response + parsed JSON
 - schema validation errors
 - timings
 
+> Note: base64 image blobs are **not** stored in artifacts. Store `image_ref` (path/ID) instead.
+> For dataset evaluation, keep `image_ref` stable (e.g., relative path under `/workspace/src`) so you can join predictions with GT later.
+> Batch runs also write a summary artifact under `ARTIFACTS_DIR/batches/YYYY-MM-DD/<run_id>.json`.
+
+
 > The API response **does not** leak artifact paths unless raw output is allowed (`DEBUG_MODE=1` + `debug:read_raw`).
+
+---
+
+## Exporting artifacts to your local machine
+
+A common workflow (e.g., on a GPU server / RunPod):
+
+### 1) Create an archive on the server
+
+From the directory that contains `artifacts/`:
+
+```bash
+tar -czf artifacts.tar.gz artifacts
+```
+
+Tip: include a timestamp in the filename:
+
+```bash
+tar -czf artifacts_$(date -u +%Y%m%dT%H%M%SZ).tar.gz artifacts
+```
+
+### 2) Serve the archive over HTTP (quick & simple)
+
+```bash
+python3 -m http.server 8888 --bind 0.0.0.0
+```
+
+Make sure port `8888` is reachable from your machine (firewall / security group).
+
+### 3) Download from your local machine
+
+Linux/macOS:
+
+```bash
+curl -O http://<SERVER_IP>:8888/artifacts.tar.gz
+# or:
+wget http://<SERVER_IP>:8888/artifacts.tar.gz
+```
+
+Windows PowerShell:
+
+```powershell
+Invoke-WebRequest -Uri "http://<SERVER_IP>:8888/artifacts.tar.gz" -OutFile "artifacts.tar.gz"
+```
+
+### 4) Unpack locally
+
+```bash
+tar -xzf artifacts.tar.gz
+```
+
+Alternative (often more secure): copy over SSH:
+
+```bash
+# from your local machine
+scp user@<SERVER_IP>:/path/to/artifacts.tar.gz .
+```
+
 
 ---
 
