@@ -241,7 +241,7 @@ curl -s http://127.0.0.1:8080/v1/batch_extract \
   -H "Content-Type: application/json" \
   -d '{
     "task_id": "receipt_fields_v1",
-    "images_dir": "/workspace/src/data/receipts",
+    "images_dir": "/workspace/src/data/cord_subset/images",
     "concurrency": 4,
     "limit": 100
   }' | jq
