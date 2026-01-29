@@ -45,6 +45,8 @@ jsonschema==4.23.0
     # via -r requirements.in
 jsonschema-specifications==2025.9.1
     # via jsonschema
+pillow==11.3.0
+    # via -r requirements.in
 pydantic==2.10.6
     # via
     #   -r requirements.in

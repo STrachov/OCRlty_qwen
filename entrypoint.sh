@@ -1,6 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+
+# ----------------------------
+# Helpers
+# ----------------------------
+git_retry() {
+  # Usage: git_retry <cmd...>
+  # Retries git commands on transient network/DNS failures (e.g., "Could not resolve host: github.com").
+  local max="${GIT_RETRY_MAX:-5}"
+  local delay="${GIT_RETRY_DELAY:-3}"
+  local attempt=1
+
+  while true; do
+    if "$@"; then
+      return 0
+    fi
+    if (( attempt >= max )); then
+      echo "[entrypoint] git_retry: giving up after ${attempt}/${max} attempts: $*" >&2
+      return 1
+    fi
+    echo "[entrypoint] git_retry: attempt ${attempt}/${max} failed for: $*" >&2
+    echo "[entrypoint] git_retry: sleeping ${delay}s before retry..." >&2
+    sleep "${delay}"
+    attempt=$((attempt + 1))
+    delay=$((delay * 2))
+    if (( delay > 30 )); then delay=30; fi
+  done
+}
+
 echo "[entrypoint] ===== Qwen3-VL container start ====="
 
 # ----------------------------
@@ -25,17 +53,17 @@ echo "[entrypoint] Fallback APP_ROOT=${APP_FALLBACK_ROOT}"
 
 if command -v git >/dev/null 2>&1; then
   if [ -d "${APP_SRC_ROOT}/.git" ]; then
-    echo "[entrypoint] Found existing git repo at ${APP_SRC_ROOT}, running git pull..."
+    echo "[entrypoint] Found existing git repo at ${APP_SRC_ROOT}, running git pull with retry..."
     (
       cd "${APP_SRC_ROOT}" && \
-      git pull --ff-only || echo "[entrypoint] git pull failed, keeping existing code"
+      git_retry git pull --ff-only || echo "[entrypoint] git pull failed after retries, keeping existing code"
     )
     APP_ROOT="${APP_SRC_ROOT}"
   else
     if [ ! -d "${APP_SRC_ROOT}" ] || [ -z "$(ls -A "${APP_SRC_ROOT}" 2>/dev/null || true)" ]; then
       echo "[entrypoint] Cloning repo into ${APP_SRC_ROOT}..."
       mkdir -p "${APP_SRC_ROOT}"
-      if git clone --depth 1 "${APP_REPO_URL}" "${APP_SRC_ROOT}"; then
+      if git_retry git clone --depth 1 "${APP_REPO_URL}" "${APP_SRC_ROOT}"; then
         echo "[entrypoint] Clone OK."
         APP_ROOT="${APP_SRC_ROOT}"
       else
