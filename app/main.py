@@ -261,6 +261,13 @@ def _save_artifact(request_id: str, payload: Dict[str, Any]) -> str:
     return str(path)
 
 
+def _to_artifact_rel(p: Union[str, Path]) -> str:
+    try:
+        pp = Path(p).resolve()
+        return str(pp.relative_to(ARTIFACTS_DIR))
+    except Exception:
+        return str(p)
+
 
 def _ensure_batch_artifacts_dir() -> Path:
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -819,6 +826,7 @@ async def extract(
                 temperature=temperature,
                 max_tokens=max_tokens,
                 response_format=response_format,
+                request_id=request_id,  
             )
         t_inf1 = time.perf_counter()
     except Exception as e:
@@ -833,6 +841,7 @@ async def extract(
     try:
         parsed = json.loads(raw_text)
     except Exception as e:
+        # Сохраняем артефакт, иначе реально “некуда посмотреть”
         artifact_path = _save_artifact(
             request_id,
             {
@@ -842,18 +851,24 @@ async def extract(
                 "inference_backend": backend,
                 "input": _sanitize_input_for_artifact(req),
                 "auth": {"key_id": principal.key_id, "role": principal.role},
-                "raw_response": raw,
-                "raw_model_text": raw_text,
-                "error": f"json_parse_error: {e}",
+                "error_stage": "inference",
+                "error": str(e),
+                "vllm_request_meta": {
+                    "model": MODEL_ID,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "has_response_format": response_format is not None,
+                },
                 "timings_ms": {
-                    "inference_ms": (t_inf1 - t_inf0) * 1000.0,
                     "total_ms": (time.perf_counter() - t0) * 1000.0,
                 },
             },
         )
+        detail = f"Inference request failed ({backend}): {e}"
         if _raw_allowed(principal):
-            raise HTTPException(status_code=502, detail=f"Model returned invalid JSON. Artifact: {artifact_path}")
-        raise HTTPException(status_code=502, detail="Model returned invalid JSON.")
+            detail += f" | artifact_rel={_to_artifact_rel(artifact_path)}"
+        raise HTTPException(status_code=502, detail=detail)
+
 
     if schema_dict is None:
         schema_ok = True
@@ -942,18 +957,26 @@ async def batch_extract(
                     debug=None,
                 )
 
-                resp = await extract(sub_req, principal)  # reuse single-image logic
+                resp = await extract(sub_req, principal)  
+                art_p = _find_artifact_path(resp.request_id, max_days=30)
+                artifact_rel = _to_artifact_rel(art_p) if art_p is not None else None
+
                 return {
                     "file": rel_path,
                     "request_id": resp.request_id,
+                    "artifact_rel": artifact_rel,
                     "ok": True,
                     "schema_ok": resp.schema_ok,
                     "timings_ms": resp.timings_ms,
                 }
+
             except HTTPException as he:
+                art_p = _find_artifact_path(request_id, max_days=30)
+                artifact_rel = _to_artifact_rel(art_p) if art_p is not None else None
                 return {
                     "file": rel_path,
                     "request_id": request_id,
+                    "artifact_rel": artifact_rel,
                     "ok": False,
                     "schema_ok": False,
                     "error": f"HTTP {he.status_code}: {he.detail}",

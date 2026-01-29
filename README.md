@@ -237,7 +237,7 @@ Defaults:
 
 ```bash
 curl -s http://127.0.0.1:8080/v1/batch_extract \
-  -H "Authorization: Bearer <SECRET>" \
+  -H "Authorization: Bearer $CLIENT_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "task_id": "receipt_fields_v1",
