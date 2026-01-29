@@ -1,5 +1,12 @@
 import asyncio
 import base64
+import math
+from io import BytesIO
+
+try:
+    from PIL import Image
+except Exception:  # pragma: no cover
+    Image = None
 import hashlib
 import json
 import mimetypes
@@ -32,6 +39,19 @@ DEFAULT_IMAGES_DIR = str((DATA_ROOT / "data").resolve())
 
 ARTIFACTS_DIR = Path(settings.ARTIFACTS_DIR).resolve()
 MODEL_ID = settings.VLLM_MODEL
+
+# ---------------------------
+# Context-length safety / smart image retry
+# ---------------------------
+# We don't have exact multimodal tokenization locally. Instead, on "decoder prompt too long" errors,
+# we parse the server-provided token counts and compute a one-shot downscale factor for the image.
+_CTX_SAFETY_TOKENS = 256          # keep some slack for chat template / special tokens
+_SCALE_SAFETY = 0.90              # extra shrink for safety
+_MIN_SCALE = 0.20                 # do not shrink below this in one retry
+_MAX_SCALE = 0.95                 # avoid pointless re-encode
+_QWEN_ALIGN = 32                  # Qwen-VL family typically aligns vision sizes to multiples of 32
+_TEXT_CHARS_PER_TOKEN = 3.0       # conservative heuristic for "JSON-y" text
+
 
 # ---------------------------
 # Tasks (p.4)
@@ -186,6 +206,12 @@ class ExtractResponse(BaseModel):
     result: Dict[str, Any]
     timings_ms: Dict[str, float]
     schema_errors: Optional[list[str]] = None
+
+    # Populated when we had to downscale the image due to context-length constraints.
+    image_resize: Optional[Dict[str, Any]] = None
+
+    # System-level errors/retries recorded during processing (empty for a clean successful run).
+    error_history: List[Dict[str, Any]] = Field(default_factory=list)
 
     # Returned only when DEBUG_MODE=1 and caller has debug:read_raw (or AUTH is disabled).
     raw_model_text: Optional[str] = None
@@ -349,7 +375,7 @@ def _image_content(image_url: Optional[str], image_base64: Optional[str], mime_t
 
 
 
-def _sanitize_input_for_artifact(req: "ExtractRequest") -> Dict[str, Any]:
+def _sanitize_input_for_artifact(req: "ExtractRequest", image_resize: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     # Avoid storing large blobs (base64) in artifacts.
     return {
         "task_id": req.task_id,
@@ -359,6 +385,7 @@ def _sanitize_input_for_artifact(req: "ExtractRequest") -> Dict[str, Any]:
         "has_image_base64": bool(req.image_base64),
         "image_base64_chars": len(req.image_base64) if req.image_base64 else 0,
         "mime_type": req.mime_type,
+        "image_resize": image_resize,
         "has_debug": bool(req.debug),
     }
 
@@ -548,6 +575,163 @@ def _build_messages(prompt_text: str, req: ExtractRequest) -> Any:
             ],
         }
     ]
+
+
+# ---------------------------
+# Smart retry for context-length errors (decoder prompt too long)
+# ---------------------------
+# Fragment of the error: The decoder prompt (length 9254) is longer than the maximum model length of 4096. Make sure that `max_model_len` is no smaller ...
+_DECODER_TOO_LONG_RE = re.compile(
+    r"(?:decoder\s+)?prompt\s*\(length\s+(\d+)\)\s+is\s+longer\s+than\s+the\s+maximum\s+model\s+length\s+of\s+(\d+)",
+    re.IGNORECASE,
+)
+
+
+def _parse_decoder_prompt_too_long(err: str) -> Optional[Tuple[int, int]]:
+    """Return (t_resp, t_max) if error looks like a context-length error."""
+    if not err:
+        return None
+    m = _DECODER_TOO_LONG_RE.search(err)
+    if not m:
+        return None
+    try:
+        return int(m.group(1)), int(m.group(2))
+    except Exception:
+        return None
+
+
+def _estimate_prompt_tokens(prompt_text: str, schema_dict: Optional[dict[str, Any]]) -> int:
+    """Heuristic token count for the *text* part of the request (prompt + schema).
+
+    We cannot reproduce exact multimodal tokenization locally. This estimate is used only to compute
+    an image downscale factor after the server returns an exact total length (t_resp).
+    """
+    schema_s = ""
+    if schema_dict is not None:
+        try:
+            schema_s = json.dumps(schema_dict, ensure_ascii=False, separators=(",", ":"))
+        except Exception:
+            schema_s = str(schema_dict)
+
+    chars = len(prompt_text) + len(schema_s)
+    # Add slack for chat template, role wrappers, and structured output glue.
+    chars += 1000
+    return int(math.ceil(chars / _TEXT_CHARS_PER_TOKEN))
+
+
+def _align_down(x: int, m: int) -> int:
+    if x <= 0:
+        return m
+    return max(m, (x // m) * m)
+
+
+def _resize_base64_image_by_scale(image_base64: str, mime_type: str, scale: float) -> Tuple[str, Dict[str, Any]]:
+    if Image is None:
+        raise RuntimeError("PIL (Pillow) is required for image resizing but is not available.")
+    data = base64.b64decode(image_base64)
+    im = Image.open(BytesIO(data))
+    im.load()
+    w0, h0 = im.size
+
+    # Compute new size (align to 32 for Qwen-VL style models).
+    new_w = _align_down(int(w0 * scale), _QWEN_ALIGN)
+    new_h = _align_down(int(h0 * scale), _QWEN_ALIGN)
+
+    # Avoid degenerate sizes.
+    new_w = max(_QWEN_ALIGN, new_w)
+    new_h = max(_QWEN_ALIGN, new_h)
+
+    # If scaling doesn't change anything, return original.
+    if new_w >= w0 and new_h >= h0:
+        return image_base64, {
+            "applied": False,
+            "reason": "scale_noop",
+            "scale": float(scale),
+            "orig_w": int(w0),
+            "orig_h": int(h0),
+            "new_w": int(w0),
+            "new_h": int(h0),
+        }
+
+    im = im.convert("RGB").resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+    out = BytesIO()
+    mt = (mime_type or "").lower().strip()
+
+    # Preserve PNG when explicitly requested; otherwise JPEG is fine for receipts.
+    if mt == "image/png":
+        im.save(out, format="PNG", optimize=True)
+        out_mime = "image/png"
+    else:
+        im.save(out, format="JPEG", quality=92, optimize=True, progressive=True)
+        out_mime = "image/jpeg"
+
+    b64_new = base64.b64encode(out.getvalue()).decode("ascii")
+    return b64_new, {
+        "applied": True,
+        "reason": "context_len_retry",
+        "scale": float(scale),
+        "orig_w": int(w0),
+        "orig_h": int(h0),
+        "new_w": int(new_w),
+        "new_h": int(new_h),
+        "orig_b64_chars": int(len(image_base64)),
+        "new_b64_chars": int(len(b64_new)),
+        "sent_mime_type": out_mime,
+    }
+
+
+def _compute_retry_scale(t_resp: int, t_max: int, t_prompt_est: int) -> Optional[float]:
+    """Compute linear image downscale factor from server-provided lengths.
+
+    Let:
+      t_resp = total decoder prompt length from the server error (text + image tokens)
+      t_prompt_est = estimated text-only tokens (prompt + schema + wrappers)
+      t_max = server max context length
+
+    We want: t_prompt_est + t_img_new <= t_max - safety
+    and assume image tokens scale ~ area ~ (scale^2).
+    """
+    budget = int(t_max) - int(_CTX_SAFETY_TOKENS)
+    if t_prompt_est >= budget:
+        return None
+
+    t_img_now = max(1, int(t_resp) - int(t_prompt_est))
+    t_img_budget = max(1, int(budget) - int(t_prompt_est))
+
+    # token reduction ratio needed
+    r_tokens = t_img_budget / float(t_img_now)
+    # linear scale ~ sqrt(token_ratio)
+    scale = math.sqrt(r_tokens) * float(_SCALE_SAFETY)
+    scale = max(float(_MIN_SCALE), min(float(_MAX_SCALE), float(scale)))
+    return scale
+
+
+def _now_iso_ms() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace('+00:00', 'Z')
+
+
+def _mk_err(stage: str, message: str, **extra: Any) -> Dict[str, Any]:
+    d: Dict[str, Any] = {
+        "ts": _now_iso_ms(),
+        "stage": stage,
+        "message": message,
+    }
+    if extra:
+        d["extra"] = extra
+    return d
+
+
+def _try_load_error_history_for_request(request_id: str) -> Optional[list[Dict[str, Any]]]:
+    art_p = _find_artifact_path(request_id, max_days=30)
+    if art_p is None:
+        return None
+    try:
+        obj = json.loads(Path(art_p).read_text(encoding="utf-8"))
+        eh = obj.get("error_history")
+        return eh if isinstance(eh, list) else None
+    except Exception:
+        return None
 
 
 def _normalize_schema(schema: Union[dict[str, Any], str, None], default_schema: dict[str, Any]) -> Optional[dict[str, Any]]:
@@ -815,32 +999,165 @@ async def extract(
 
     backend = settings.INFERENCE_BACKEND.strip().lower()
 
-    try:
-        t_inf0 = time.perf_counter()
-        if backend == "mock":
-            raw = _mock_chat_completions(request_id, principal, req.debug, schema_dict=schema_dict)
-        else:
-            raw = await vllm.chat_completions(
-                model=MODEL_ID,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                response_format=response_format,
-                request_id=request_id,  
+    # Record system-level errors/retries in artifacts (and optionally return them).
+    error_history: List[Dict[str, Any]] = []
+    image_resize: Optional[Dict[str, Any]] = None
+
+    messages_cur = messages
+    mime_cur = req.mime_type
+
+    t_inf0 = time.perf_counter()
+    t_inf1 = t_inf0
+
+    retried = False
+    attempt = 0
+
+    while True:
+        try:
+            t_inf0 = time.perf_counter()
+            if backend == "mock":
+                raw = _mock_chat_completions(request_id, principal, req.debug, schema_dict=schema_dict)
+            else:
+                raw = await vllm.chat_completions(
+                    model=MODEL_ID,
+                    messages=messages_cur,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    response_format=response_format,
+                    request_id=request_id,
+                )
+            t_inf1 = time.perf_counter()
+            break
+
+        except Exception as e:
+            err = str(e)
+            error_history.append(_mk_err("inference_request" if attempt == 0 else "retry_request", err))
+
+            # One-shot smart retry: if server says the decoder prompt is too long, downscale the image
+            # by a factor derived from server-provided token counts.
+            if attempt == 0 and backend != "mock":
+                ctx = _parse_decoder_prompt_too_long(err)
+                if ctx and req.image_base64 and (not req.image_url):
+                    t_resp, t_max = ctx
+                    t_prompt_est = _estimate_prompt_tokens(prompt_text, schema_dict)
+                    scale = _compute_retry_scale(t_resp=t_resp, t_max=t_max, t_prompt_est=t_prompt_est)
+                    if scale is None:
+                        error_history.append(
+                            _mk_err(
+                                "retry_skipped",
+                                "Context-length error but estimated prompt is already too large; image downscale cannot help.",
+                                t_resp=t_resp,
+                                t_max=t_max,
+                                t_prompt_est=t_prompt_est,
+                            )
+                        )
+                    else:
+                        try:
+                            b64_new, resize_info = _resize_base64_image_by_scale(req.image_base64, req.mime_type, scale)
+                            if resize_info.get("applied"):
+                                image_resize = {
+                                    **resize_info,
+                                    "t_resp": int(t_resp),
+                                    "t_max": int(t_max),
+                                    "t_prompt_est": int(t_prompt_est),
+                                }
+                                error_history.append(
+                                    _mk_err(
+                                        "retry_resize",
+                                        "Retrying with downscaled image due to context-length error.",
+                                        **image_resize,
+                                    )
+                                )
+
+                                mime_cur = image_resize.get("sent_mime_type") or req.mime_type
+                                messages_cur = [
+                                    {
+                                        "role": "user",
+                                        "content": [
+                                            _image_content(req.image_url, b64_new, mime_cur),
+                                            {"type": "text", "text": prompt_text},
+                                        ],
+                                    }
+                                ]
+
+                                retried = True
+                                attempt = 1
+                                continue
+
+                            error_history.append(
+                                _mk_err(
+                                    "retry_skipped",
+                                    "Computed resize scale resulted in no size change; skipping retry.",
+                                    scale=float(scale),
+                                )
+                            )
+                        except Exception as e2:
+                            error_history.append(_mk_err("retry_failed", str(e2)))
+
+            # Inference failed (and retry either didn't happen or also failed).
+            artifact_path = _save_artifact(
+                request_id,
+                {
+                    "request_id": request_id,
+                    "task_id": req.task_id,
+                    "model": MODEL_ID,
+                    "inference_backend": backend,
+                    "input": _sanitize_input_for_artifact(req, image_resize=image_resize),
+                    "auth": {"key_id": principal.key_id, "role": principal.role},
+                    "image_resize": image_resize,
+                    "error_stage": "inference_request",
+                    "error_history": error_history,
+                    "vllm_request_meta": {
+                        "model": MODEL_ID,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                        "has_response_format": response_format is not None,
+                        "retried": retried,
+                    },
+                    "timings_ms": {
+                        "total_ms": (time.perf_counter() - t0) * 1000.0,
+                    },
+                },
             )
-        t_inf1 = time.perf_counter()
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Inference request failed ({backend}): {e}")
+            detail = f"Inference request failed ({backend}): {err}"
+            if _raw_allowed(principal):
+                detail += f" | artifact_rel={_to_artifact_rel(artifact_path)}"
+            raise HTTPException(status_code=502, detail=detail)
 
     try:
         raw_text = raw["choices"][0]["message"]["content"]
-    except Exception:
-        raise HTTPException(status_code=502, detail=f"Unexpected {backend} response format.")
+    except Exception as e:
+        error_history.append(_mk_err("unexpected_response_format", str(e)))
+
+        artifact_path = _save_artifact(
+            request_id,
+            {
+                "request_id": request_id,
+                "task_id": req.task_id,
+                "model": MODEL_ID,
+                "inference_backend": backend,
+                "input": _sanitize_input_for_artifact(req, image_resize=image_resize),
+                "auth": {"key_id": principal.key_id, "role": principal.role},
+                "error_stage": "unexpected_response_format",
+                "error_history": error_history,
+                "raw_response": raw,
+                "timings_ms": {
+                    "inference_ms": (t_inf1 - t_inf0) * 1000.0,
+                    "total_ms": (time.perf_counter() - t0) * 1000.0,
+                },
+            },
+        )
+        detail = f"Unexpected {backend} response format."
+        if _raw_allowed(principal):
+            detail += f" | artifact_rel={_to_artifact_rel(artifact_path)}"
+        raise HTTPException(status_code=502, detail=detail)
 
     # Parse JSON produced by the model.
     try:
         parsed = json.loads(raw_text)
     except Exception as e:
+        error_history.append(_mk_err("parse_json", str(e)))
+
         # Сохраняем артефакт, иначе реально “некуда посмотреть”
         artifact_path = _save_artifact(
             request_id,
@@ -849,10 +1166,12 @@ async def extract(
                 "task_id": req.task_id,
                 "model": MODEL_ID,
                 "inference_backend": backend,
-                "input": _sanitize_input_for_artifact(req),
+                "input": _sanitize_input_for_artifact(req, image_resize=image_resize),
                 "auth": {"key_id": principal.key_id, "role": principal.role},
-                "error_stage": "inference",
-                "error": str(e),
+                "error_stage": "parse_json",
+                "error_history": error_history,
+                "raw_model_text": raw_text,
+                "raw_response": raw,
                 "vllm_request_meta": {
                     "model": MODEL_ID,
                     "temperature": temperature,
@@ -860,11 +1179,12 @@ async def extract(
                     "has_response_format": response_format is not None,
                 },
                 "timings_ms": {
+                    "inference_ms": (t_inf1 - t_inf0) * 1000.0,
                     "total_ms": (time.perf_counter() - t0) * 1000.0,
                 },
             },
         )
-        detail = f"Inference request failed ({backend}): {e}"
+        detail = f"Model output is not valid JSON ({backend}): {e}"
         if _raw_allowed(principal):
             detail += f" | artifact_rel={_to_artifact_rel(artifact_path)}"
         raise HTTPException(status_code=502, detail=detail)
@@ -885,8 +1205,10 @@ async def extract(
             "task_id": req.task_id,
             "model": MODEL_ID,
             "inference_backend": backend,
-            "input": _sanitize_input_for_artifact(req),
+            "input": _sanitize_input_for_artifact(req, image_resize=image_resize),
             "auth": {"key_id": principal.key_id, "role": principal.role},
+            "image_resize": image_resize,
+            "error_history": error_history,
             "schema": None if schema_dict is None else json.dumps(schema_dict, ensure_ascii=False),
             "schema_ok": schema_ok,
             "schema_errors": errors,
@@ -909,6 +1231,8 @@ async def extract(
         schema_ok=schema_ok,
         result=parsed if isinstance(parsed, dict) else {"_parsed": parsed},
         raw_model_text=raw_out,
+        image_resize=image_resize,
+        error_history=error_history,
         timings_ms={
             "inference_ms": (t_inf1 - t_inf0) * 1000.0,
             "total_ms": (time.perf_counter() - t0) * 1000.0,
@@ -968,26 +1292,37 @@ async def batch_extract(
                     "ok": True,
                     "schema_ok": resp.schema_ok,
                     "timings_ms": resp.timings_ms,
+                    "image_resize": resp.image_resize,
+                    "error_history": resp.error_history,
                 }
 
             except HTTPException as he:
                 art_p = _find_artifact_path(request_id, max_days=30)
                 artifact_rel = _to_artifact_rel(art_p) if art_p is not None else None
+                err_hist = _try_load_error_history_for_request(request_id) or [
+                    _mk_err("http_error", f"HTTP {he.status_code}: {he.detail}")
+                ]
                 return {
                     "file": rel_path,
                     "request_id": request_id,
                     "artifact_rel": artifact_rel,
                     "ok": False,
                     "schema_ok": False,
-                    "error": f"HTTP {he.status_code}: {he.detail}",
+                    "error_history": err_hist,
                 }
             except Exception as e:
+                art_p = _find_artifact_path(request_id, max_days=30)
+                artifact_rel = _to_artifact_rel(art_p) if art_p is not None else None
+                err_hist = _try_load_error_history_for_request(request_id) or [
+                    _mk_err("exception", f"{e.__class__.__name__}: {e}")
+                ]
                 return {
                     "file": rel_path,
                     "request_id": request_id,
+                    "artifact_rel": artifact_rel,
                     "ok": False,
                     "schema_ok": False,
-                    "error": f"{e.__class__.__name__}: {e}",
+                    "error_history": err_hist,
                 }
 
     # Run
