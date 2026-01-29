@@ -1061,13 +1061,6 @@ async def extract(
                                     "t_max": int(t_max),
                                     "t_prompt_est": int(t_prompt_est),
                                 }
-                                error_history.append(
-                                    _mk_err(
-                                        "retry_resize",
-                                        "Retrying with downscaled image due to context-length error.",
-                                        **image_resize,
-                                    )
-                                )
 
                                 mime_cur = image_resize.get("sent_mime_type") or req.mime_type
                                 messages_cur = [
