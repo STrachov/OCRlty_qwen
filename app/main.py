@@ -768,6 +768,7 @@ def _build_response_format(schema_dict: dict[str, Any], schema_name: str) -> dic
         "json_schema": {
             "name": schema_name,
             "schema": schema_dict,
+            "strict": "true",
         },
     }
 

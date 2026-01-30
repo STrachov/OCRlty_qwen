@@ -16,7 +16,10 @@
         "string",
         "null"
       ],
-      "description": "Currency code/symbol, e.g. EUR, UAH."
+      "description": "3-letter ISO 4217 currency code in UPPERCASE (e.g., EUR, UAH). Return null if not explicitly shown on the receipt. No explanations.",
+      "pattern": "^[A-Z]{3}$",
+      "minLength": 3,
+      "maxLength": 3
     },
     "cash": {
       "type": [
@@ -51,10 +54,23 @@
         "string",
         "null"
       ],
-      "description": "cash | card | mixed | unknown."
+      "description": "Payment method: one of cash|card|mixed|unknown. Return unknown if not explicitly indicated.",
+      "enum": [
+        "cash",
+        "card",
+        "mixed",
+        "unknown",
+        null
+      ]
     }
   },
   "required": [
-    "total"
+    "total",
+    "currency",
+    "cash",
+    "card",
+    "change",
+    "paid_amount",
+    "payment_method"
   ]
 }

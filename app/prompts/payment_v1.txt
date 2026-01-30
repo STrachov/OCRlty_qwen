@@ -1,7 +1,7 @@
 You are given an image of a receipt.
-Extract payment-related fields and return ONLY a JSON object with the following keys:
+Extract payment-related fields and return ONLY a JSON object with the following keys (ALL keys must be present):
   - total: number or null
-  - currency: string or null
+  - currency: string or null (3-letter ISO 4217 code, UPPERCASE, e.g., EUR, UAH)
   - cash: number or null (amount paid in cash, if present)
   - card: number or null (amount paid by card, if present)
   - change: number or null (change given back, if present)
@@ -9,6 +9,11 @@ Extract payment-related fields and return ONLY a JSON object with the following 
   - payment_method: string or null (cash | card | mixed | unknown)
 
 Rules:
-- Return JSON only (no extra text).
+- Return JSON only (no extra text, no markdown, no commentary).
+- Do NOT infer currency from language, country, number formatting, or common usage.
+  * If the currency code is NOT explicitly printed on the receipt, set currency = null.
+- payment_method must be exactly one of: cash, card, mixed, unknown (or null).
+  * Use unknown if you cannot determine it from the receipt text/amount breakdown.
 - Use null when the value is not present or cannot be determined.
 - Use dot as decimal separator.
+- Do not include explanations inside any field values (especially currency/payment_method).
