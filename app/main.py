@@ -1087,22 +1087,31 @@ async def extract(
                             )
                         except Exception as e2:
                             error_history.append(_mk_err("retry_failed", str(e2)))
+            prompt_sha256 = hashlib.sha256(task["prompt_value"].encode("utf-8")).hexdigest()
+            schema_obj = task["schema_value"]  
+            schema_canon = json.dumps(schema_obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            schema_sha256 = hashlib.sha256(schema_canon.encode("utf-8")).hexdigest()
+
+            artifact_base = {
+            "request_id": request_id,
+            "task_id": req.task_id,
+            "model": MODEL_ID,
+            "inference_backend": backend,
+            "input": _sanitize_input_for_artifact(req, image_resize=image_resize),
+            "auth": {"key_id": principal.key_id, "role": principal.role},
+            "image_resize": image_resize,
+            "prompt_sha256": prompt_sha256,
+            "schema_sha256": schema_sha256,
+            }
 
             # Inference failed (and retry either didn't happen or also failed).
             artifact_path = _save_artifact(
                 request_id,
                 {
-                    "request_id": request_id,
-                    "task_id": req.task_id,
-                    "model": MODEL_ID,
-                    "inference_backend": backend,
-                    "input": _sanitize_input_for_artifact(req, image_resize=image_resize),
-                    "auth": {"key_id": principal.key_id, "role": principal.role},
-                    "image_resize": image_resize,
-                    "error_stage": "inference_request",
+                    **artifact_base,
                     "error_history": error_history,
+                    "error_stage": "inference_request",
                     "vllm_request_meta": {
-                        "model": MODEL_ID,
                         "temperature": temperature,
                         "max_tokens": max_tokens,
                         "has_response_format": response_format is not None,
@@ -1126,12 +1135,7 @@ async def extract(
         artifact_path = _save_artifact(
             request_id,
             {
-                "request_id": request_id,
-                "task_id": req.task_id,
-                "model": MODEL_ID,
-                "inference_backend": backend,
-                "input": _sanitize_input_for_artifact(req, image_resize=image_resize),
-                "auth": {"key_id": principal.key_id, "role": principal.role},
+                **artifact_base,
                 "error_stage": "unexpected_response_format",
                 "error_history": error_history,
                 "raw_response": raw,
@@ -1156,18 +1160,12 @@ async def extract(
         artifact_path = _save_artifact(
             request_id,
             {
-                "request_id": request_id,
-                "task_id": req.task_id,
-                "model": MODEL_ID,
-                "inference_backend": backend,
-                "input": _sanitize_input_for_artifact(req, image_resize=image_resize),
-                "auth": {"key_id": principal.key_id, "role": principal.role},
+                **artifact_base,
                 "error_stage": "parse_json",
                 "error_history": error_history,
                 "raw_model_text": raw_text,
                 "raw_response": raw,
                 "vllm_request_meta": {
-                    "model": MODEL_ID,
                     "temperature": temperature,
                     "max_tokens": max_tokens,
                     "has_response_format": response_format is not None,
@@ -1195,13 +1193,7 @@ async def extract(
     _save_artifact(
         request_id,
         {
-            "request_id": request_id,
-            "task_id": req.task_id,
-            "model": MODEL_ID,
-            "inference_backend": backend,
-            "input": _sanitize_input_for_artifact(req, image_resize=image_resize),
-            "auth": {"key_id": principal.key_id, "role": principal.role},
-            "image_resize": image_resize,
+            **artifact_base,
             "error_history": error_history,
             "schema": None if schema_dict is None else json.dumps(schema_dict, ensure_ascii=False),
             "schema_ok": schema_ok,
@@ -1243,7 +1235,7 @@ async def batch_extract(
     principal: ApiPrincipal = Depends(require_scopes(["extract:run"])),
 ) -> BatchExtractResponse:
     # Validate task files early.
-    _get_task(req.task_id)
+    task = _get_task(req.task_id)
 
     run_id = (req.run_id or _default_run_id()).strip()
     _validate_request_id_for_fs(run_id)
@@ -1330,6 +1322,11 @@ async def batch_extract(
     schema_failed = sum(1 for it in items if it.get("ok") and (not it.get("schema_ok")))
 
     t1 = time.perf_counter()
+    
+    prompt_sha256 = hashlib.sha256(task["prompt_value"].encode("utf-8")).hexdigest()
+    schema_obj = task["schema_value"]  
+    schema_canon = json.dumps(schema_obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    schema_sha256 = hashlib.sha256(schema_canon.encode("utf-8")).hexdigest()
 
     batch_artifact_path = _save_batch_artifact(
         run_id,
@@ -1340,6 +1337,12 @@ async def batch_extract(
             "glob": req.glob,
             "exts": req.exts,
             "limit": req.limit,
+            "task_snapshot": {
+                "prompt_text": task["prompt_value"],
+                "schema_json": task["schema_value"],
+                "prompt_sha256": prompt_sha256,
+                "schema_sha256": schema_sha256,
+            },
             "concurrency": req.concurrency,
             "model": MODEL_ID,
             "inference_backend": settings.INFERENCE_BACKEND.strip().lower(),
