@@ -14,12 +14,15 @@ import os
 import re
 import time
 import uuid
+import tarfile
+import tempfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union, List
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
@@ -274,7 +277,7 @@ def _validate_request_id_for_fs(request_id: str) -> None:
 
 def _ensure_artifacts_dir() -> Path:
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    out_dir = ARTIFACTS_DIR / day
+    out_dir = ARTIFACTS_DIR / "extracts" / day
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir
 
@@ -389,21 +392,15 @@ def _sanitize_input_for_artifact(req: "ExtractRequest", image_resize: Optional[D
         "has_debug": bool(req.debug),
     }
 
-def _debug_enabled_or_403() -> None:
+def _debug_enabled() -> None:
     if not settings.DEBUG_MODE:
         raise HTTPException(status_code=403, detail="Debug features are disabled (DEBUG_MODE=0).")
 
 
 def _debug_allowed(principal: ApiPrincipal) -> None:
-    _debug_enabled_or_403()
+    _debug_enabled()
     if settings.AUTH_ENABLED and ("debug:run" not in principal.scopes):
         raise HTTPException(status_code=403, detail="Missing required scope: debug:run")
-
-
-def _require_debug_read_raw(principal: ApiPrincipal) -> None:
-    _debug_enabled_or_403()
-    if settings.AUTH_ENABLED and ("debug:read_raw" not in principal.scopes):
-        raise HTTPException(status_code=403, detail="Missing required scope: debug:read_raw")
 
 
 def _raw_allowed(principal: ApiPrincipal) -> bool:
@@ -768,7 +765,7 @@ def _build_response_format(schema_dict: dict[str, Any], schema_name: str) -> dic
         "json_schema": {
             "name": schema_name,
             "schema": schema_dict,
-            "strict": "true",
+            "strict": True,
         },
     }
 
@@ -798,10 +795,11 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _iter_artifact_days_desc() -> List[str]:
-    if not ARTIFACTS_DIR.exists():
+    base = ARTIFACTS_DIR / "extracts"
+    if not base.exists():
         return []
     days = []
-    for p in ARTIFACTS_DIR.iterdir():
+    for p in base.iterdir():
         if p.is_dir() and _DATE_RE.match(p.name):
             days.append(p.name)
     days.sort(reverse=True)
@@ -814,12 +812,12 @@ def _find_artifact_path(request_id: str, *, date: Optional[str] = None, max_days
     if date is not None:
         if not _DATE_RE.match(date):
             raise HTTPException(status_code=400, detail="date must be in YYYY-MM-DD format.")
-        p = ARTIFACTS_DIR / date / f"{request_id}.json"
+        p = (ARTIFACTS_DIR / "extracts") / date / f"{request_id}.json"
         return p if p.exists() else None
 
     days = _iter_artifact_days_desc()[: max(1, int(max_days))]
     for d in days:
-        p = ARTIFACTS_DIR / d / f"{request_id}.json"
+        p = (ARTIFACTS_DIR / "extracts") / d / f"{request_id}.json"
         if p.exists():
             return p
     return None
@@ -875,20 +873,23 @@ async def me(principal: ApiPrincipal = Depends(require_scopes([]))):
 
 # --- p.2: debug artifact viewing ---
 
-@app.get("/v1/debug/artifacts", response_model=ArtifactListResponse)
+@app.get(
+    "/v1/debug/artifacts", 
+    response_model=ArtifactListResponse,
+    dependencies=[
+        Depends(_debug_enabled),
+        Depends(require_scopes(["debug:read_raw"])),
+    ],)
 async def list_artifacts(
     date: Optional[str] = Query(default=None, description="Filter by day (YYYY-MM-DD). If omitted, returns most recent items across days."),
-    limit: int = Query(default=50, ge=1, le=500),
-    principal: ApiPrincipal = Depends(require_scopes(["debug:read_raw"])),
+    limit: int = Query(default=50, ge=1, le=500), 
 ) -> ArtifactListResponse:
-    _require_debug_read_raw(principal)
-
     items: List[ArtifactListItem] = []
 
     if date is not None:
         if not _DATE_RE.match(date):
             raise HTTPException(status_code=400, detail="date must be in YYYY-MM-DD format.")
-        day_dir = ARTIFACTS_DIR / date
+        day_dir = (ARTIFACTS_DIR / "extracts") / date
         if not day_dir.exists():
             return ArtifactListResponse(items=[])
 
@@ -909,7 +910,7 @@ async def list_artifacts(
 
     # no date: walk recent day folders and collect
     for d in _iter_artifact_days_desc():
-        day_dir = ARTIFACTS_DIR / d
+        day_dir = (ARTIFACTS_DIR / "extracts") / d
         files = sorted(day_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
         for p in files:
             rid = p.stem
@@ -927,14 +928,60 @@ async def list_artifacts(
     return ArtifactListResponse(items=items)
 
 
+
+@app.get("/v1/debug/artifacts/backup.tar.gz")
+async def get_artifacts_backup(
+    background_tasks: BackgroundTasks,
+    dependencies=[
+        Depends(_debug_enabled),
+        Depends(require_scopes(["debug:read_raw"])),
+    ],
+):
+    """
+    Create a tar.gz backup of the whole ARTIFACTS_DIR and return it as a download.
+
+    NOTE: This endpoint is debug-only and requires DEBUG_MODE=1 and debug:read_raw scope.
+    """
+    # Ensure artifacts dir exists so we can create an archive even on a fresh instance.
+    ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    fd, tmp_path = tempfile.mkstemp(prefix="artifacts_backup_", suffix=".tar.gz", dir="/tmp")
+    os.close(fd)
+
+    def _build_tar() -> None:
+        with tarfile.open(tmp_path, "w:gz") as tar:
+            # Put the top-level folder into the archive for convenient extraction.
+            tar.add(str(ARTIFACTS_DIR), arcname=str(ARTIFACTS_DIR.name), recursive=True)
+
+    try:
+        await asyncio.to_thread(_build_tar)
+    except Exception:
+        # Clean up tmp file on error.
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        finally:
+            raise
+
+    background_tasks.add_task(lambda: os.path.exists(tmp_path) and os.remove(tmp_path))
+
+    return FileResponse(
+        tmp_path,
+        media_type="application/gzip",
+        filename="artifacts_backup.tar.gz",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.get("/v1/debug/artifacts/{request_id}")
 async def read_artifact(
     request_id: str,
     date: Optional[str] = Query(default=None, description="Optional day (YYYY-MM-DD) to avoid search."),
-    principal: ApiPrincipal = Depends(require_scopes(["debug:read_raw"])),
+    dependencies=[
+        Depends(_debug_enabled),
+        Depends(require_scopes(["debug:read_raw"])),
+    ],
 ) -> Dict[str, Any]:
-    _require_debug_read_raw(principal)
-
     p = _find_artifact_path(request_id, date=date)
     if p is None:
         raise HTTPException(status_code=404, detail="Artifact not found.")
@@ -951,10 +998,11 @@ async def read_artifact(
 async def read_artifact_raw_text(
     request_id: str,
     date: Optional[str] = Query(default=None, description="Optional day (YYYY-MM-DD) to avoid search."),
-    principal: ApiPrincipal = Depends(require_scopes(["debug:read_raw"])),
+    dependencies=[
+        Depends(_debug_enabled),
+        Depends(require_scopes(["debug:read_raw"])),
+    ],
 ) -> Dict[str, Any]:
-    _require_debug_read_raw(principal)
-
     p = _find_artifact_path(request_id, date=date)
     if p is None:
         raise HTTPException(status_code=404, detail="Artifact not found.")
@@ -1012,6 +1060,23 @@ async def extract(
 
     retried = False
     attempt = 0
+
+    prompt_sha256 = hashlib.sha256(task["prompt_value"].encode("utf-8")).hexdigest()
+    schema_obj = task["schema_value"]  
+    schema_canon = json.dumps(schema_obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    schema_sha256 = hashlib.sha256(schema_canon.encode("utf-8")).hexdigest()
+
+    artifact_base = {
+    "request_id": request_id,
+    "task_id": req.task_id,
+    "model": MODEL_ID,
+    "inference_backend": backend,
+    "input": _sanitize_input_for_artifact(req, image_resize=image_resize),
+    "auth": {"key_id": principal.key_id, "role": principal.role},
+    "image_resize": image_resize,
+    "prompt_sha256": prompt_sha256,
+    "schema_sha256": schema_sha256,
+    }
 
     while True:
         try:
@@ -1087,22 +1152,7 @@ async def extract(
                             )
                         except Exception as e2:
                             error_history.append(_mk_err("retry_failed", str(e2)))
-            prompt_sha256 = hashlib.sha256(task["prompt_value"].encode("utf-8")).hexdigest()
-            schema_obj = task["schema_value"]  
-            schema_canon = json.dumps(schema_obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-            schema_sha256 = hashlib.sha256(schema_canon.encode("utf-8")).hexdigest()
-
-            artifact_base = {
-            "request_id": request_id,
-            "task_id": req.task_id,
-            "model": MODEL_ID,
-            "inference_backend": backend,
-            "input": _sanitize_input_for_artifact(req, image_resize=image_resize),
-            "auth": {"key_id": principal.key_id, "role": principal.role},
-            "image_resize": image_resize,
-            "prompt_sha256": prompt_sha256,
-            "schema_sha256": schema_sha256,
-            }
+            
 
             # Inference failed (and retry either didn't happen or also failed).
             artifact_path = _save_artifact(

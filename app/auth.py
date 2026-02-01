@@ -12,11 +12,6 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from fastapi import Depends, HTTPException, Request
 from app.settings import settings
 
-# --- Env / config ---
-AUTH_ENABLED = settings.AUTH_ENABLED
-AUTH_DB_PATH = settings.AUTH_DB_PATH
-API_KEY_PEPPER = settings.API_KEY_PEPPER.strip()
-
 ROLE_PRESET_SCOPES: Dict[str, List[str]] = {
     "client": ["extract:run"],
     "debugger": ["extract:run", "debug:run"],
@@ -41,9 +36,9 @@ class ApiPrincipal:
 # --- Hashing ---
 
 def _require_pepper() -> str:
-    if not API_KEY_PEPPER:
-        raise RuntimeError("API_KEY_PEPPER is required (set env var) when auth is enabled.")
-    return API_KEY_PEPPER
+    if not settings.API_KEY_PEPPER :
+        raise RuntimeError("settings.API_KEY_PEPPER  is required (set env var) when auth is enabled.")
+    return settings.API_KEY_PEPPER 
 
 
 def compute_key_hash(api_key: str, pepper: str) -> str:
@@ -68,9 +63,9 @@ def _connect(db_path: str) -> sqlite3.Connection:
     return conn
 
 
-def init_auth_db(db_path: str = AUTH_DB_PATH) -> None:
+def init_auth_db(db_path: str = settings.AUTH_DB_PATH) -> None:
     """Creates tables if not exist. Safe to call on every startup."""
-    if AUTH_ENABLED:
+    if settings.AUTH_ENABLED:
         _require_pepper()
 
     with _connect(db_path) as conn:
@@ -119,7 +114,7 @@ def extract_api_key_from_request(request: Request) -> Optional[str]:
 
 # --- Lookup / dependency ---
 
-def lookup_principal(api_key: str, db_path: str = AUTH_DB_PATH) -> Optional[ApiPrincipal]:
+def lookup_principal(api_key: str, db_path: str = settings.AUTH_DB_PATH) -> Optional[ApiPrincipal]:
     pepper = _require_pepper()
     kh = compute_key_hash(api_key, pepper)
 
@@ -173,10 +168,10 @@ def lookup_principal(api_key: str, db_path: str = AUTH_DB_PATH) -> Optional[ApiP
 def require_api_key(request: Request) -> ApiPrincipal:
     """
     FastAPI dependency:
-      - If AUTH_ENABLED=0 -> returns a synthetic principal (for local/dev), without checks.
-      - If AUTH_ENABLED=1 -> requires valid active key.
+      - If settings.AUTH_ENABLED=0 -> returns a synthetic principal (for local/dev), without checks.
+      - If settings.AUTH_ENABLED=1 -> requires valid active key.
     """
-    if not AUTH_ENABLED:
+    if not settings.AUTH_ENABLED:
         principal = ApiPrincipal(api_key_id=0, key_id="anonymous", role="anonymous", scopes=set())
         request.state.principal = principal
         return principal
@@ -198,7 +193,7 @@ def require_scopes(required_scopes: Sequence[str]):
     required = [s.strip() for s in required_scopes if s and str(s).strip()]
 
     def _dep(principal: ApiPrincipal = Depends(require_api_key)) -> ApiPrincipal:
-        if not AUTH_ENABLED:
+        if not settings.AUTH_ENABLED:
             return principal
 
         missing = [s for s in required if s not in principal.scopes]
@@ -219,7 +214,7 @@ def create_api_key(
     key_id: str,
     role: str,
     scopes: Optional[Sequence[str]] = None,
-    db_path: str = AUTH_DB_PATH,
+    db_path: str = settings.AUTH_DB_PATH,
 ) -> Tuple[str, ApiPrincipal]:
     """Creates a new API key. Returns (raw_api_key, principal)."""
     pepper = _require_pepper()
@@ -258,7 +253,7 @@ def create_api_key(
     return raw_key, principal
 
 
-def revoke_api_key(key_id: str, db_path: str = AUTH_DB_PATH) -> bool:
+def revoke_api_key(key_id: str, db_path: str = settings.AUTH_DB_PATH) -> bool:
     init_auth_db(db_path)
     with _connect(db_path) as conn:
         cur = conn.execute(
@@ -272,7 +267,7 @@ def revoke_api_key(key_id: str, db_path: str = AUTH_DB_PATH) -> bool:
         return cur.rowcount > 0
 
 
-def list_api_keys(db_path: str = AUTH_DB_PATH) -> List[Dict[str, Any]]:
+def list_api_keys(db_path: str = settings.AUTH_DB_PATH) -> List[Dict[str, Any]]:
     init_auth_db(db_path)
     with _connect(db_path) as conn:
         rows = conn.execute(
