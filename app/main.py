@@ -268,7 +268,7 @@ class BatchExtractResponse(BaseModel):
     batch_artifact_path: str
 
     eval: Optional[Dict[str, Any]] = Field(default=None, description="Optional eval result (if gt_path was provided).")
-    eval_artifact_path: Optional[str] = Field(default=None, description="Path to saved eval artifact JSON (if gt_path was provided).")
+    
 
 
 
@@ -337,7 +337,8 @@ def _ensure_eval_artifacts_dir() -> Path:
     return out_dir
 
 
-def _save_eval_artifact(eval_id: str, payload: Dict[str, Any]) -> str:
+def _save_eval_artifact(payload: Dict[str, Any]) -> str:
+    eval_id  = payload['eval_id'] or ''
     _validate_request_id_for_fs(eval_id)
     out_dir = _ensure_eval_artifacts_dir()
     path = out_dir / f"{eval_id}.json"
@@ -1360,13 +1361,15 @@ async def list_artifacts(
 
 
 
-@app.get("/v1/debug/artifacts/backup.tar.gz")
-async def get_artifacts_backup(
-    background_tasks: BackgroundTasks,
+@app.get(
+    "/v1/debug/artifacts/backup.tar.gz",
     dependencies=[
         Depends(_debug_enabled),
         Depends(require_scopes(["debug:read_raw"])),
     ],
+    )
+async def get_artifacts_backup(
+    background_tasks: BackgroundTasks,
 ):
     """
     Create a tar.gz backup of the whole ARTIFACTS_DIR and return it as a download.
@@ -1456,8 +1459,7 @@ class EvalBatchVsGTRequest(BaseModel):
     gt_image_key: str = Field(default="image", description="Key inside each GT record that contains the image path/name (basename is used). Fallback: image_file.")
     gt_record_key: Optional[str] = Field(default=None, description="Optional key inside each GT record to use as the actual GT object (e.g. 'gt' or 'fields').")
     limit: Optional[int] = Field(default=None, ge=1, description="Optional max number of batch items to evaluate.")
-    include_samples: bool = Field(default=True, description="Include per-sample mismatch summaries in response.")
-    samples_limit: int = Field(default=25, ge=0, le=200, description="Max samples to return (worst by mismatches).")
+    sort_samples: bool = Field(default=False, description="Sort samples by mismatches in response.")
     mismatches_per_sample: int = Field(default=30, ge=0, le=200, description="Max mismatches to include per sample.")
     mismatch_limit_total: int = Field(default=5000, ge=0, le=20000, description="Global cap on stored mismatch entries per sample evaluation (prevents huge responses).")
     str_mode: str = Field(default="exact", description="String compare mode: exact | strip | strip_collapse")
@@ -1489,7 +1491,8 @@ class EvalSampleSummary(BaseModel):
     notes: List[str] = Field(default_factory=list)
 
 
-class EvalBatchVsGTResponse(BaseModel):
+class EvalBatchVsGTResult(BaseModel):
+    eval_id: str
     run_id: str
     batch_date: Optional[str] = None
     task_id: Optional[str] = None
@@ -1502,6 +1505,15 @@ class EvalBatchVsGTResponse(BaseModel):
 
     fields: List[EvalFieldMetric]
     worst_samples: Optional[List[EvalSampleSummary]] = None
+
+
+class EvalBatchVsGTResponse(BaseModel):
+    eval_id: str #eval_id,
+    created_at: str #datetime.now(timezone.utc).isoformat(),
+    run_id: str #run_id,
+    gt_path: str #req.gt_path,
+    batch_artifact_path: str
+    eval_artifact_path: str #eval_artifact_path,
 
 
 @app.post(
@@ -1681,41 +1693,59 @@ async def eval_batch_vs_gt(req: EvalBatchVsGTRequest) -> EvalBatchVsGTResponse:
 
     field_rows.sort(key=_sort_key)
 
-    worst_samples: Optional[List[EvalSampleSummary]] = None
-    if req.include_samples:
+    if req.sort_samples:
         # Sort by mismatches desc, then ok/schema_ok
         sample_summaries.sort(key=lambda s: (-s.mismatches, s.ok, s.schema_ok, s.image))
-        worst_samples = sample_summaries[: int(req.samples_limit)] if req.samples_limit > 0 else []
-
+    
     comparable_total = sum(fr.comparable for fr in field_rows)
     matched_total = sum(fr.matched for fr in field_rows)
     overall_acc = (matched_total / comparable_total) if comparable_total > 0 else None
 
+
+    eval_id = f"{run_id}__eval_{uuid.uuid4().hex[:8]}"
+    
+     # Save eval artifact for later inspection.
+    
+    eval_artifact_path = _save_eval_artifact(
+        {
+            "eval_id": eval_id,
+            "run_id": run_id,
+            "batch_date": batch_date,
+            "task_id": task_id if isinstance(task_id, str) else None,
+            "model": batch_obj.get("model") if isinstance(batch_obj.get("model"), str) else None,
+            "inference_backend": (
+                batch_obj.get("inference_backend")
+                if isinstance(batch_obj.get("inference_backend"), str)
+                else None
+            ),
+            "batch_summary": batch_obj.get("summary") if isinstance(batch_obj.get("summary"), dict) else {},
+            "gt_summary": {
+                "gt_path": str(gt_p),
+                "gt_records": len(gt_index),
+                "gt_image_key": req.gt_image_key,
+                "gt_found_for_batch_items": gt_found,
+                "gt_missing_for_batch_items": gt_missing,
+            },
+            "eval_summary": {
+                "items_considered": len(items),
+                "pred_found": pred_found,
+                "pred_missing": pred_missing,
+                "leaf_paths_in_schema": len(leaf_paths),
+                "comparable_total": comparable_total,
+                "matched_total": matched_total,
+                "overall_accuracy": overall_acc,
+            },
+            "fields": [fr.model_dump() for fr in field_rows],
+            "sample_summaries": [s.model_dump() for s in sample_summaries],
+        }
+    )
     return EvalBatchVsGTResponse(
+        eval_id=eval_id,
+        created_at=datetime.now(timezone.utc).isoformat(),
         run_id=run_id,
-        batch_date=batch_date,
-        task_id=task_id if isinstance(task_id, str) else None,
-        model=batch_obj.get("model") if isinstance(batch_obj.get("model"), str) else None,
-        inference_backend=batch_obj.get("inference_backend") if isinstance(batch_obj.get("inference_backend"), str) else None,
-        batch_summary=batch_obj.get("summary") if isinstance(batch_obj.get("summary"), dict) else {},
-        gt_summary={
-            "gt_path": str(gt_p),
-            "gt_records": len(gt_index),
-            "gt_image_key": req.gt_image_key,
-            "gt_found_for_batch_items": gt_found,
-            "gt_missing_for_batch_items": gt_missing,
-        },
-        eval_summary={
-            "items_considered": len(items),
-            "pred_found": pred_found,
-            "pred_missing": pred_missing,
-            "leaf_paths_in_schema": len(leaf_paths),
-            "comparable_total": comparable_total,
-            "matched_total": matched_total,
-            "overall_accuracy": overall_acc,
-        },
-        fields=field_rows,
-        worst_samples=worst_samples,
+        gt_path=req.gt_path,
+        batch_artifact_path=str(batch_p),
+        eval_artifact_path=str(eval_artifact_path),
     )
 
 
@@ -2134,25 +2164,12 @@ async def batch_extract(
             batch_date=Path(batch_artifact_path).parent.name,
             gt_path=req.gt_path,
             gt_image_key=req.gt_image_key or "image",
-            include_samples=False,
+            sort_samples=False,
             str_mode="exact",
         )
         eval_resp = await eval_batch_vs_gt(eval_req)
         eval_obj = eval_resp.model_dump()
 
-        # Save eval artifact for later inspection.
-        eval_id = f"{run_id}__eval_{uuid.uuid4().hex[:8]}"
-        eval_artifact_path = _save_eval_artifact(
-            eval_id,
-            {
-                "eval_id": eval_id,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "run_id": run_id,
-                "gt_path": req.gt_path,
-                "batch_artifact_path": batch_artifact_path,
-                **eval_obj,
-            },
-        )
 
 
     return BatchExtractResponse(
@@ -2167,5 +2184,4 @@ async def batch_extract(
         timings_ms={"total_ms": (t1 - t0) * 1000.0},
         batch_artifact_path=batch_artifact_path,
         eval=eval_obj,
-        eval_artifact_path=eval_artifact_path,
     )
