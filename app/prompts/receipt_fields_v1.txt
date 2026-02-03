@@ -1,2 +1,25 @@
-Extract receipt fields from the image and return only JSON that matches the provided JSON schema.
-Use null when a value is missing or not visible.
+You are given an image of a receipt.
+
+Extract receipt-level monetary fields and return ONLY a JSON object that matches the provided JSON schema.
+
+RAW OUTPUT RULES (IMPORTANT):
+- Output raw strings EXACTLY as printed on the receipt: keep separators ("," or "."), currency tokens (e.g., "Rp"),
+  symbols, and minus signs, including spaces and letter case.
+- Do NOT normalize, reformat, compute, or "clean up" values.
+  - If the receipt shows "Rp 30,000", output "Rp 30,000" (NOT "30000").
+  - If the receipt shows "181,500.00", output "181,500.00" (NOT "181500").
+- Do NOT infer missing values. If a value is not explicitly present or not visible, return null.
+
+Field selection guidance:
+- total_raw: take the amount on the line labeled like TOTAL / GRAND TOTAL / AMOUNT DUE (pick the last such total if multiple).
+- subtotal_raw: take the amount on the line labeled SUBTOTAL.
+- tax_raw: take the amount on the line labeled TAX / VAT.
+- service_raw: take the amount on the line labeled SERVICE / SERVICE CHARGE.
+- discount_raw: take the amount on the line labeled DISCOUNT.
+- cash_raw: take the amount on the line labeled CASH / CASH PAID (money given by customer).
+- card_raw: take the amount on the line labeled CARD / CREDIT / CC.
+- change_raw: take the amount on the line labeled CHANGE.
+
+Other rules:
+- Return JSON only (no extra text).
+- Use null when a value is missing or not visible.

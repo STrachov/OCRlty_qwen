@@ -5,7 +5,7 @@ __pycache__/
 
 # Virtual environments
 .venv/
-
+.venv_research/
 # Packaging / builds
 *.egg-info/
 .eggs/
@@ -44,3 +44,4 @@ hf_home/
 auth/
 artifacts/
 docs/
+research/

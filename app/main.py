@@ -20,6 +20,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union, List
+from collections import defaultdict
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -67,13 +68,6 @@ TASK_SPECS: Dict[str, Dict[str, str]] = {
         "schema_name": "default_schema_receipt_fields_v1",
         "prompt_file": "receipt_fields_v1.txt",
         "prompt_name": "default_prompt_receipt_fields_v1",
-    },
-    # New tasks (add files under app/schemas and app/prompts)
-    "payment_v1": {
-        "schema_file": "payment_v1.schema.json",
-        "schema_name": "payment_v1",
-        "prompt_file": "payment_v1.txt",
-        "prompt_name": "payment_v1",
     },
     "items_light_v1": {
         "schema_file": "items_light_v1.schema.json",
@@ -838,6 +832,406 @@ def _read_artifact_json(p: Path) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"Failed to read artifact JSON: {e}")
 
 
+
+# ---------------------------
+# Batch artifacts + evaluation helpers
+# ---------------------------
+
+def _iter_batch_days_desc() -> List[str]:
+    base = ARTIFACTS_DIR / "batches"
+    if not base.exists():
+        return []
+    days: List[str] = []
+    for p in base.iterdir():
+        if p.is_dir() and _DATE_RE.match(p.name):
+            days.append(p.name)
+    days.sort(reverse=True)
+    return days
+
+
+def _find_batch_artifact_path(run_id: str, *, date: Optional[str] = None, max_days: int = 30) -> Optional[Path]:
+    _validate_request_id_for_fs(run_id)
+
+    if date is not None:
+        if not _DATE_RE.match(date):
+            raise HTTPException(status_code=400, detail="batch_date must be in YYYY-MM-DD format.")
+        p = (ARTIFACTS_DIR / "batches") / date / f"{run_id}.json"
+        return p if p.exists() else None
+
+    days = _iter_batch_days_desc()[: max(1, int(max_days))]
+    for d in days:
+        p = (ARTIFACTS_DIR / "batches") / d / f"{run_id}.json"
+        if p.exists():
+            return p
+    return None
+
+
+def _read_json_file(p: Path) -> Any:
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read JSON file {str(p)!r}: {e}")
+
+
+def _validate_under_any_root(p: Path, roots: List[Path]) -> Path:
+    pp = p.expanduser().resolve()
+    for r in roots:
+        try:
+            rel = pp.relative_to(r.resolve())
+            return r.resolve() / rel
+        except Exception:
+            continue
+    raise HTTPException(
+        status_code=400,
+        detail=f"Path must be under one of allowed roots: {[str(r) for r in roots]}. Got: {str(p)!r}",
+    )
+
+
+class _Missing:
+    pass
+
+
+_MISSING = _Missing()
+
+
+def _json_type(v: Any) -> str:
+    if v is _MISSING:
+        return "missing"
+    if v is None:
+        return "null"
+    if isinstance(v, bool):
+        return "boolean"
+    if isinstance(v, int) and not isinstance(v, bool):
+        return "integer"
+    if isinstance(v, float):
+        return "number"
+    if isinstance(v, str):
+        return "string"
+    if isinstance(v, list):
+        return "array"
+    if isinstance(v, dict):
+        return "object"
+    # Fallback for odd types (e.g. Decimal) - treat as string repr
+    return "unknown"
+
+
+def _schema_types(schema: Dict[str, Any]) -> List[str]:
+    t = schema.get("type")
+    if isinstance(t, str):
+        return [t]
+    if isinstance(t, list):
+        return [x for x in t if isinstance(x, str)]
+    # Infer from keywords
+    if isinstance(schema.get("properties"), dict):
+        return ["object"]
+    if "items" in schema:
+        return ["array"]
+    return []
+
+
+def _schema_allows_type(schema: Dict[str, Any], vtype: str, root_schema: Dict[str, Any]) -> bool:
+    schema = _deref_schema(schema, root_schema)
+    for key in ("anyOf", "oneOf"):
+        if key in schema and isinstance(schema[key], list) and schema[key]:
+            return any(_schema_allows_type(s, vtype, root_schema) for s in schema[key] if isinstance(s, dict))
+    if "allOf" in schema and isinstance(schema["allOf"], list) and schema["allOf"]:
+        # allOf: value must satisfy all; use a weak check (any) to avoid false negatives
+        return any(_schema_allows_type(s, vtype, root_schema) for s in schema["allOf"] if isinstance(s, dict))
+
+    types = _schema_types(schema)
+    if not types:
+        return True  # no type constraint
+    if vtype == "integer" and "number" in types:
+        return True
+    return vtype in types
+
+
+def _pick_variant(schema: Dict[str, Any], value: Any, root_schema: Dict[str, Any]) -> Dict[str, Any]:
+    schema = _deref_schema(schema, root_schema)
+
+    for key in ("anyOf", "oneOf"):
+        variants = schema.get(key)
+        if isinstance(variants, list) and variants:
+            vtype = _json_type(value)
+            # Try match by GT type first; fall back to first
+            for s in variants:
+                if isinstance(s, dict) and _schema_allows_type(s, vtype, root_schema):
+                    return _deref_schema(s, root_schema)
+            # If gt is missing/null but pred has value, try pred type
+            if value in (_MISSING, None):
+                return _deref_schema(variants[0], root_schema) if isinstance(variants[0], dict) else schema
+            return _deref_schema(variants[0], root_schema) if isinstance(variants[0], dict) else schema
+
+    # allOf: choose first (we don't attempt true merging here)
+    if "allOf" in schema and isinstance(schema["allOf"], list) and schema["allOf"]:
+        first = schema["allOf"][0]
+        return _deref_schema(first, root_schema) if isinstance(first, dict) else schema
+
+    return schema
+
+
+def _deref_schema(schema: Dict[str, Any], root_schema: Dict[str, Any]) -> Dict[str, Any]:
+    if "$ref" in schema and isinstance(schema["$ref"], str):
+        resolved = _resolve_ref(schema["$ref"], root_schema)
+        if resolved:
+            return _deref_schema(resolved, root_schema)
+    return schema
+
+
+def _normalize_string(s: str, mode: str) -> str:
+    if mode == "exact":
+        return s
+    out = s.strip()
+    if mode == "strip_collapse":
+        out = re.sub(r"\s+", " ", out)
+    return out
+
+
+def _safe_scalar(v: Any, max_len: int = 200) -> Any:
+    # Keep response JSON small and stable.
+    if v is _MISSING:
+        return "<MISSING>"
+    if isinstance(v, (str, int, float, bool)) or v is None:
+        if isinstance(v, str) and len(v) > max_len:
+            return v[: max_len - 3] + "..."
+        return v
+    # objects/arrays: truncated JSON
+    try:
+        s = json.dumps(v, ensure_ascii=False)
+    except Exception:
+        s = repr(v)
+    if len(s) > max_len:
+        s = s[: max_len - 3] + "..."
+    return s
+
+
+def _get_prop(obj: Any, key: str, *, key_fallbacks: bool = False) -> Any:
+    if not isinstance(obj, dict):
+        return _MISSING
+    if key in obj:
+        return obj[key]
+    if key_fallbacks and key.endswith("_raw"):
+        k2 = key[:-4]
+        if k2 in obj:
+            return obj[k2]
+    return _MISSING
+
+
+def _compare_scalar(pred: Any, gt: Any, *, str_mode: str) -> Tuple[bool, str]:
+    # Returns (match, reason_if_mismatch_or_note)
+    if gt is _MISSING:
+        return False, "gt_missing"
+    if pred is _MISSING:
+        return False, "pred_missing"
+
+    # Normalize strings if requested
+    if isinstance(gt, str) and isinstance(pred, str):
+        g2 = _normalize_string(gt, str_mode)
+        p2 = _normalize_string(pred, str_mode)
+        if g2 == p2:
+            return True, "ok"
+        return False, "value_mismatch"
+
+    # integer vs number: compare numerically if both numeric
+    if isinstance(gt, (int, float)) and isinstance(pred, (int, float)) and not isinstance(gt, bool) and not isinstance(pred, bool):
+        if float(gt) == float(pred):
+            return True, "ok"
+        return False, "value_mismatch"
+
+    if gt == pred:
+        return True, "ok"
+
+    # Type mismatch is useful to surface
+    if _json_type(gt) != _json_type(pred):
+        return False, "type_mismatch"
+
+    return False, "value_mismatch"
+
+
+def _walk_schema(
+    schema: Dict[str, Any],
+    pred: Any,
+    gt: Any,
+    *,
+    root_schema: Dict[str, Any],
+    path: Tuple[Union[str, int, None], ...],
+    metrics: Dict[str, Dict[str, int]],
+    mismatches: List[Dict[str, Any]],
+    str_mode: str,
+    key_fallbacks: bool,
+    mismatch_limit: int,
+) -> None:
+    schema_eff = _pick_variant(schema, gt, root_schema)
+    schema_eff = _deref_schema(schema_eff, root_schema)
+
+    # Determine node type
+    types = _schema_types(schema_eff)
+    node_type = types[0] if types else _json_type(gt if gt is not _MISSING else pred)
+    if node_type == "integer" and isinstance(gt, float):
+        node_type = "number"
+
+    if node_type == "object":
+        props = schema_eff.get("properties", {})
+        if not isinstance(props, dict):
+            props = {}
+        # If pred/gt are not dicts (or missing), treat children as missing.
+        pred_obj = pred if isinstance(pred, dict) else {}
+        gt_obj = gt if isinstance(gt, dict) else {}
+
+        for k, subschema in props.items():
+            if not isinstance(subschema, dict):
+                continue
+            pred_v = _get_prop(pred_obj, k, key_fallbacks=key_fallbacks)
+            gt_v = _get_prop(gt_obj, k, key_fallbacks=key_fallbacks)
+            _walk_schema(
+                subschema,
+                pred_v,
+                gt_v,
+                root_schema=root_schema,
+                path=path + (k,),
+                metrics=metrics,
+                mismatches=mismatches,
+                str_mode=str_mode,
+                key_fallbacks=key_fallbacks,
+                mismatch_limit=mismatch_limit,
+            )
+        return
+
+    if node_type == "array":
+        items_schema = schema_eff.get("items", {})
+        if not isinstance(items_schema, dict):
+            items_schema = {}
+        pred_list = pred if isinstance(pred, list) else []
+        gt_list = gt if isinstance(gt, list) else []
+        n = max(len(pred_list), len(gt_list))
+        for i in range(n):
+            pred_v = pred_list[i] if i < len(pred_list) else _MISSING
+            gt_v = gt_list[i] if i < len(gt_list) else _MISSING
+            _walk_schema(
+                items_schema,
+                pred_v,
+                gt_v,
+                root_schema=root_schema,
+                path=path + (None,),  # wildcard index
+                metrics=metrics,
+                mismatches=mismatches,
+                str_mode=str_mode,
+                key_fallbacks=key_fallbacks,
+                mismatch_limit=mismatch_limit,
+            )
+        return
+
+    # Scalar leaf
+    # Path string
+    def _fmt_path(pth: Tuple[Union[str, int, None], ...]) -> str:
+        out = ""
+        for seg in pth:
+            if seg is None:
+                out += "[*]"
+            elif isinstance(seg, int):
+                out += f"[{seg}]"
+            else:
+                out += ("." if out else "") + str(seg)
+        return out or "<root>"
+
+    path_str = _fmt_path(path)
+
+    m = metrics.setdefault(path_str, defaultdict(int))
+    m["total"] += 1
+    if gt is _MISSING:
+        m["gt_missing"] += 1
+        # Not comparable; nothing else to do
+        return
+    m["comparable"] += 1
+
+    ok, reason = _compare_scalar(pred, gt, str_mode=str_mode)
+    if ok:
+        m["matched"] += 1
+        return
+
+    m["mismatched"] += 1
+    if pred is _MISSING:
+        m["pred_missing"] += 1
+    if reason == "type_mismatch":
+        m["type_mismatch"] += 1
+    if gt is None:
+        m["gt_null"] += 1
+    if pred is None:
+        m["pred_null"] += 1
+
+    if len(mismatches) < mismatch_limit:
+        mismatches.append(
+            {
+                "path": path_str,
+                "gt": _safe_scalar(gt),
+                "pred": _safe_scalar(pred),
+                "reason": reason,
+            }
+        )
+
+
+def _schema_leaf_paths(schema: Dict[str, Any], root_schema: Dict[str, Any], *, path: Tuple[Union[str, None], ...] = ()) -> List[str]:
+    """Return leaf (scalar) paths derived from schema, mostly for reporting."""
+    schema_eff = _deref_schema(_pick_variant(schema, _MISSING, root_schema), root_schema)
+    types = _schema_types(schema_eff)
+    node_type = types[0] if types else None
+
+    if node_type == "object" or isinstance(schema_eff.get("properties"), dict):
+        out: List[str] = []
+        props = schema_eff.get("properties", {})
+        if isinstance(props, dict):
+            for k, s in props.items():
+                if isinstance(s, dict):
+                    out.extend(_schema_leaf_paths(s, root_schema, path=path + (k,)))
+        return out
+
+    if node_type == "array" or "items" in schema_eff:
+        items_schema = schema_eff.get("items", {})
+        if isinstance(items_schema, dict):
+            return _schema_leaf_paths(items_schema, root_schema, path=path + (None,))
+        return []
+
+    # Scalar
+    out = ""
+    for seg in path:
+        if seg is None:
+            out += "[*]"
+        else:
+            out += ("." if out else "") + str(seg)
+    return [out or "<root>"]
+
+
+def _build_gt_index(gt_obj: Any, *, image_key: str) -> Dict[str, Dict[str, Any]]:
+    """
+    Build basename -> gt_record mapping.
+    Accepts:
+    - dict[id -> record]
+    - list[record]
+    """
+    records: List[Dict[str, Any]] = []
+    if isinstance(gt_obj, dict):
+        for v in gt_obj.values():
+            if isinstance(v, dict):
+                records.append(v)
+    elif isinstance(gt_obj, list):
+        for v in gt_obj:
+            if isinstance(v, dict):
+                records.append(v)
+
+    out: Dict[str, Dict[str, Any]] = {}
+    for r in records:
+        img = r.get(image_key)
+        if img is None:
+            # Common legacy key
+            img = r.get("image_file")
+        if img is None:
+            continue
+        base = os.path.basename(str(img))
+        if base and base not in out:
+            out[base] = r
+    return out
+
+
 # ---------------------------
 # Routes
 # ---------------------------
@@ -1012,6 +1406,280 @@ async def read_artifact_raw_text(
         "date": _artifact_date_from_path(p),
         "raw_model_text": data.get("raw_model_text"),
     }
+
+
+
+# --- p.3b: debug evaluation (batch artifacts vs GT) ---
+
+class EvalBatchVsGTRequest(BaseModel):
+    run_id: str = Field(..., description="Batch run_id to load from artifacts/batches/<day>/<run_id>.json")
+    batch_date: Optional[str] = Field(default=None, description="Optional day (YYYY-MM-DD) to avoid searching over days.")
+    max_days: int = Field(default=30, ge=1, le=365, description="How many recent days to search for batch artifact if batch_date is not provided.")
+    gt_path: str = Field(..., description="Path to GT JSON file (must be under DATA_ROOT or ARTIFACTS_DIR).")
+    gt_image_key: str = Field(default="image", description="Key inside each GT record that contains the image path/name (basename is used). Fallback: image_file.")
+    gt_record_key: Optional[str] = Field(default=None, description="Optional key inside each GT record to use as the actual GT object (e.g. 'gt' or 'fields').")
+    limit: Optional[int] = Field(default=None, ge=1, description="Optional max number of batch items to evaluate.")
+    include_samples: bool = Field(default=True, description="Include per-sample mismatch summaries in response.")
+    samples_limit: int = Field(default=25, ge=0, le=200, description="Max samples to return (worst by mismatches).")
+    mismatches_per_sample: int = Field(default=30, ge=0, le=200, description="Max mismatches to include per sample.")
+    mismatch_limit_total: int = Field(default=5000, ge=0, le=20000, description="Global cap on stored mismatch entries per sample evaluation (prevents huge responses).")
+    str_mode: str = Field(default="exact", description="String compare mode: exact | strip | strip_collapse")
+    key_fallbacks: bool = Field(default=False, description="If true, try generic key fallbacks like '<name>_raw' -> '<name>' when reading GT/pred objects.")
+
+
+class EvalFieldMetric(BaseModel):
+    path: str
+    total: int
+    comparable: int
+    matched: int
+    mismatched: int
+    accuracy: Optional[float] = None
+    pred_missing: int = 0
+    gt_missing: int = 0
+    type_mismatch: int = 0
+
+
+class EvalSampleSummary(BaseModel):
+    image: str
+    request_id: str
+    ok: bool
+    schema_ok: bool
+    artifact_rel: Optional[str] = None
+    gt_found: bool = False
+    pred_found: bool = False
+    mismatches: int = 0
+    mismatches_preview: List[Dict[str, Any]] = Field(default_factory=list)
+    notes: List[str] = Field(default_factory=list)
+
+
+class EvalBatchVsGTResponse(BaseModel):
+    run_id: str
+    batch_date: Optional[str] = None
+    task_id: Optional[str] = None
+    model: Optional[str] = None
+    inference_backend: Optional[str] = None
+
+    batch_summary: Dict[str, Any]
+    gt_summary: Dict[str, Any]
+    eval_summary: Dict[str, Any]
+
+    fields: List[EvalFieldMetric]
+    worst_samples: Optional[List[EvalSampleSummary]] = None
+
+
+@app.post(
+    "/v1/debug/eval/batch_vs_gt",
+    response_model=EvalBatchVsGTResponse,
+    dependencies=[
+        Depends(_debug_enabled),
+        Depends(require_scopes(["debug:read_raw"])),
+    ],
+)
+async def eval_batch_vs_gt(req: EvalBatchVsGTRequest) -> EvalBatchVsGTResponse:
+    run_id = (req.run_id or "").strip()
+    _validate_request_id_for_fs(run_id)
+
+    if req.str_mode not in ("exact", "strip", "strip_collapse"):
+        raise HTTPException(status_code=400, detail="str_mode must be one of: exact, strip, strip_collapse")
+
+    batch_p = _find_batch_artifact_path(run_id, date=req.batch_date, max_days=req.max_days)
+    if batch_p is None:
+        raise HTTPException(status_code=404, detail="Batch artifact not found for given run_id (and batch_date/max_days).")
+
+    batch_date = batch_p.parent.name if batch_p.parent else None
+    batch_obj = _read_json_file(batch_p)
+    if not isinstance(batch_obj, dict):
+        raise HTTPException(status_code=500, detail="Batch artifact JSON is not an object.")
+
+    task_id = batch_obj.get("task_id")
+    task_snapshot = batch_obj.get("task_snapshot") if isinstance(batch_obj.get("task_snapshot"), dict) else {}
+    schema_json = task_snapshot.get("schema_json") if isinstance(task_snapshot.get("schema_json"), dict) else None
+
+    if schema_json is None:
+        # fallback: use current task schema if available
+        if isinstance(task_id, str) and task_id:
+            schema_json = _get_task(task_id)["schema_value"]
+        else:
+            raise HTTPException(status_code=500, detail="Batch artifact does not contain task_snapshot.schema_json, and task_id is missing.")
+
+    # Load GT
+    gt_p = _validate_under_any_root(Path(req.gt_path), roots=[DATA_ROOT, ARTIFACTS_DIR])
+    gt_obj = _read_json_file(gt_p)
+
+    gt_index = _build_gt_index(gt_obj, image_key=req.gt_image_key)
+
+    # Evaluation
+    items = batch_obj.get("items") if isinstance(batch_obj.get("items"), list) else []
+    if req.limit is not None:
+        items = items[: int(req.limit)]
+
+    # Precompute leaf paths (mostly for visibility)
+    leaf_paths = _schema_leaf_paths(schema_json, schema_json)
+
+    metrics: Dict[str, Dict[str, int]] = {}
+    sample_summaries: List[EvalSampleSummary] = []
+
+    gt_found = 0
+    gt_missing = 0
+    pred_found = 0
+    pred_missing = 0
+
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+
+        img_rel = it.get("image") or it.get("file") or ""
+        img_base = os.path.basename(str(img_rel))
+        request_id = str(it.get("request_id") or "")
+        artifact_rel = it.get("artifact_rel") if isinstance(it.get("artifact_rel"), str) else None
+
+        ok_flag = bool(it.get("ok"))
+        schema_ok_flag = bool(it.get("schema_ok"))
+
+        gt_rec = gt_index.get(img_base)
+
+        if gt_rec is None:
+            # fallback: sometimes GT stores relative path with folders that differ; try match by full rel as basename already done
+            gt_missing += 1
+        else:
+            gt_found += 1
+            if req.gt_record_key:
+                sub = gt_rec.get(req.gt_record_key) if isinstance(gt_rec, dict) else None
+                if isinstance(sub, dict):
+                    gt_rec = sub
+
+        # Read per-sample artifact (parsed prediction)
+        art_obj: Optional[Dict[str, Any]] = None
+        if artifact_rel:
+            p = (ARTIFACTS_DIR / artifact_rel).resolve()
+            try:
+                p.relative_to(ARTIFACTS_DIR)
+            except Exception:
+                raise HTTPException(status_code=400, detail="Invalid artifact_rel in batch artifact (path traversal detected).")
+            if p.exists():
+                data = _read_json_file(p)
+                if isinstance(data, dict):
+                    art_obj = data
+        if art_obj is None and request_id:
+            # best-effort search by request_id across recent days
+            p = _find_artifact_path(request_id, max_days=req.max_days)
+            if p is not None and p.exists():
+                data = _read_json_file(p)
+                if isinstance(data, dict):
+                    art_obj = data
+
+        pred_value = _MISSING
+        if isinstance(art_obj, dict):
+            if "parsed" in art_obj:
+                pred_value = art_obj.get("parsed")
+            elif "result" in art_obj:
+                pred_value = art_obj.get("result")
+
+        if pred_value is _MISSING:
+            pred_missing += 1
+        else:
+            pred_found += 1
+
+        mismatches: List[Dict[str, Any]] = []
+        notes: List[str] = []
+
+        if gt_rec is None:
+            notes.append("gt_not_found")
+        else:
+            # Compare only when GT exists; fields with missing GT values are tracked as gt_missing per field.
+            _walk_schema(
+                schema_json,
+                pred_value,
+                gt_rec,
+                root_schema=schema_json,
+                path=(),
+                metrics=metrics,
+                mismatches=mismatches,
+                str_mode=req.str_mode,
+                key_fallbacks=req.key_fallbacks,
+                mismatch_limit=int(req.mismatch_limit_total),
+            )
+
+        ss = EvalSampleSummary(
+            image=str(img_rel),
+            request_id=request_id,
+            ok=ok_flag,
+            schema_ok=schema_ok_flag,
+            artifact_rel=artifact_rel,
+            gt_found=gt_rec is not None,
+            pred_found=pred_value is not _MISSING,
+            mismatches=len(mismatches),
+            mismatches_preview=mismatches[: int(req.mismatches_per_sample)],
+            notes=notes,
+        )
+        sample_summaries.append(ss)
+
+    # Build field metrics list
+    field_rows: List[EvalFieldMetric] = []
+    for path, m in metrics.items():
+        total = int(m.get("total", 0))
+        comparable = int(m.get("comparable", 0))
+        matched = int(m.get("matched", 0))
+        mismatched = int(m.get("mismatched", 0))
+        acc = (matched / comparable) if comparable > 0 else None
+        field_rows.append(
+            EvalFieldMetric(
+                path=path,
+                total=total,
+                comparable=comparable,
+                matched=matched,
+                mismatched=mismatched,
+                accuracy=acc,
+                pred_missing=int(m.get("pred_missing", 0)),
+                gt_missing=int(m.get("gt_missing", 0)),
+                type_mismatch=int(m.get("type_mismatch", 0)),
+            )
+        )
+
+    # Sort: worst accuracy first (push fields with comparable==0 to the bottom)
+    def _sort_key(x: EvalFieldMetric):
+        uncmp = 1 if x.comparable <= 0 else 0
+        acc = x.accuracy if x.accuracy is not None else 1.0
+        return (uncmp, acc, -x.comparable, x.path)
+
+    field_rows.sort(key=_sort_key)
+
+    worst_samples: Optional[List[EvalSampleSummary]] = None
+    if req.include_samples:
+        # Sort by mismatches desc, then ok/schema_ok
+        sample_summaries.sort(key=lambda s: (-s.mismatches, s.ok, s.schema_ok, s.image))
+        worst_samples = sample_summaries[: int(req.samples_limit)] if req.samples_limit > 0 else []
+
+    comparable_total = sum(fr.comparable for fr in field_rows)
+    matched_total = sum(fr.matched for fr in field_rows)
+    overall_acc = (matched_total / comparable_total) if comparable_total > 0 else None
+
+    return EvalBatchVsGTResponse(
+        run_id=run_id,
+        batch_date=batch_date,
+        task_id=task_id if isinstance(task_id, str) else None,
+        model=batch_obj.get("model") if isinstance(batch_obj.get("model"), str) else None,
+        inference_backend=batch_obj.get("inference_backend") if isinstance(batch_obj.get("inference_backend"), str) else None,
+        batch_summary=batch_obj.get("summary") if isinstance(batch_obj.get("summary"), dict) else {},
+        gt_summary={
+            "gt_path": str(gt_p),
+            "gt_records": len(gt_index),
+            "gt_image_key": req.gt_image_key,
+            "gt_found_for_batch_items": gt_found,
+            "gt_missing_for_batch_items": gt_missing,
+        },
+        eval_summary={
+            "items_considered": len(items),
+            "pred_found": pred_found,
+            "pred_missing": pred_missing,
+            "leaf_paths_in_schema": len(leaf_paths),
+            "comparable_total": comparable_total,
+            "matched_total": matched_total,
+            "overall_accuracy": overall_acc,
+        },
+        fields=field_rows,
+        worst_samples=worst_samples,
+    )
 
 
 # --- p.4: extract with task_id ---

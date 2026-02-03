@@ -1,15 +1,23 @@
 You are given an image of a receipt.
-Extract purchased items and return ONLY a JSON object with the following keys:
-  - items: array of objects, each with:
-      - name: string (required)
-      - qty: number or null
-      - unit_price: number or null
-      - line_total: number or null
-  - total: number or null
-  - currency: string or null
 
-Rules:
+Extract purchased items and return ONLY a JSON object with the following keys:
+
+- items: array of objects, each with:
+    - name: string or null
+    - qty_raw: string or null        # raw quantity text exactly as printed (e.g., "1x", "x1", "1 X", "1 x")
+    - unit_price_raw: string or null # raw unit price exactly as printed (e.g., "@20.000", "Rp 30,000", "289000")
+    - line_total_raw: string or null # raw line total exactly as printed (e.g., "58,000", "36.000", "181,500.00")
+
+RAW OUTPUT RULES (IMPORTANT):
+- Output raw strings EXACTLY as printed on the receipt: keep separators ("," or "."), currency tokens (e.g., "Rp"),
+  symbols (e.g., "@"), and quantity markers (e.g., "x"), including spaces and letter case.
+- Do NOT normalize, reformat, compute, or "clean up" values.
+  - If the receipt shows "@20.000", output "@20.000" (NOT "20000").
+  - If the receipt shows "1 x", output "1 x" (NOT "1").
+- Do NOT infer missing values. If not explicitly present, return null.
+
+Other rules:
 - Return JSON only (no extra text).
-- Keep the items in the order they appear on the receipt.
-- Use null when a value is not present or cannot be determined.
-- Use dot as decimal separator.
+- Keep items in the order they appear on the receipt.
+- Use an empty array [] for modifiers if none are present.
+- Use null when a value is not present or not visible.

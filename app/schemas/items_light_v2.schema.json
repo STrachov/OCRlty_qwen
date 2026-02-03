@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "items_raw_v2",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "type": "array",
+      "description": "Line items (menu) in the order they appear on the receipt.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name_raw": {
+            "type": ["string", "null"],
+            "description": "Raw item name/description EXACTLY as printed (may include truncation like '...')."
+          },
+
+          "qty_raw": {
+            "type": ["string", "null"],
+            "description": "Raw quantity text EXACTLY as printed (examples: '1', '1x', 'x1', '1 X', '1 x')."
+          },
+
+          "unit_price_raw": {
+            "type": ["string", "null"],
+            "description": "Raw unit price EXACTLY as printed (examples: '43.636', '@20.000', 'Rp 30,000', '@8000')."
+          },
+
+          "line_total_raw": {
+            "type": ["string", "null"],
+            "description": "Raw line total EXACTLY as printed (examples: '58,000', '36.000', '181,500.00', '25000')."
+          },
+
+          "discount_raw": {
+            "type": ["string", "null"],
+            "description": "Raw discount for this line EXACTLY as printed (often negative, e.g. '-7,800')."
+          },
+
+          "code_raw": {
+            "type": ["string", "null"],
+            "description": "Raw item code/number if present (e.g. ticket number), else null."
+          },
+
+          "modifiers": {
+            "type": "array",
+            "description": "Sub/modifier lines (from CORD 'sub'). Always an array; use [] if none.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "name_raw": {
+                  "type": ["string", "null"],
+                  "description": "Raw modifier name EXACTLY as printed (e.g., '+Hot', 'Less Ice', 'Ice', 'WELL DONE')."
+                },
+                "qty_raw": {
+                  "type": ["string", "null"],
+                  "description": "Raw modifier quantity EXACTLY as printed if present (e.g., '2'), else null."
+                }
+              },
+              "required": ["name_raw", "qty_raw"]
+            }
+          }
+        },
+        "required": [
+          "name_raw",
+          "qty_raw",
+          "unit_price_raw",
+          "line_total_raw",
+          "discount_raw",
+          "code_raw",
+          "modifiers"
+        ]
+      }
+    }
+  },
+  "required": ["items"]
+}

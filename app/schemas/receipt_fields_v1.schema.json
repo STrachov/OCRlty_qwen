@@ -1,11 +1,50 @@
 {
-    "type": "object",
-    "properties": {
-      "vendor": { "type": ["string", "null"] },
-      "total": { "type": ["number", "null"] },
-      "currency": { "type": ["string", "null"] }
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "receipt_fields_v2",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "total": {
+      "type": ["string", "null"],
+      "description": "Raw grand total amount EXACTLY as printed on the receipt (e.g., \"580965\", \"Rp 30,000\", \"181,500.00\")."
     },
-    "required": ["vendor", "total", "currency"],
-    "additionalProperties": false
-  }
-  
+    "subtotal": {
+      "type": ["string", "null"],
+      "description": "Raw subtotal amount EXACTLY as printed."
+    },
+    "tax": {
+      "type": ["string", "null"],
+      "description": "Raw tax amount EXACTLY as printed."
+    },
+    "service": {
+      "type": ["string", "null"],
+      "description": "Raw service charge amount EXACTLY as printed."
+    },
+    "discount": {
+      "type": ["string", "null"],
+      "description": "Raw discount amount EXACTLY as printed (may include minus sign)."
+    },
+    "cash": {
+      "type": ["string", "null"],
+      "description": "Raw cash paid/tendered amount EXACTLY as printed."
+    },
+    "card": {
+      "type": ["string", "null"],
+      "description": "Raw card/credit payment amount EXACTLY as printed."
+    },
+    "change": {
+      "type": ["string", "null"],
+      "description": "Raw change amount EXACTLY as printed (may include minus sign depending on receipt)."
+    }
+  },
+  "required": [
+    "total",
+    "subtotal",
+    "tax",
+    "service",
+    "discount",
+    "cash",
+    "card",
+    "change"
+  ]
+}

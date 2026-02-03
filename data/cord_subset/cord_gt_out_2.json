@@ -1,0 +1,1567 @@
+{
+  "cord_train_0000":{
+    "id":"cord_train_0000",
+    "file":"data\/cord_subset\/images\/cord_0000.jpg",
+    "menu":[
+      {
+        "nm":"Nasi Campur Bali",
+        "cnt":"1 x",
+        "price":"75,000"
+      },
+      {
+        "nm":"Bbk Bengil Nasi",
+        "cnt":"1 x",
+        "price":"125,000"
+      },
+      {
+        "nm":"MilkShake Starwb",
+        "cnt":"1 x",
+        "price":"37,000"
+      },
+      {
+        "nm":"Ice Lemon Tea",
+        "cnt":"1 x",
+        "price":"24,000"
+      },
+      {
+        "nm":"Nasi Ayam Dewata",
+        "cnt":"1 x",
+        "price":"70,000"
+      },
+      {
+        "nm":"Free Ice Tea",
+        "cnt":"3 x",
+        "price":"0"
+      },
+      {
+        "nm":"Organic Green Sa",
+        "cnt":"1 x",
+        "price":"65,000"
+      },
+      {
+        "nm":"Ice Tea",
+        "cnt":"1 x",
+        "price":"18,000"
+      },
+      {
+        "nm":"Ice Orange",
+        "cnt":"1 x",
+        "price":"29,000"
+      },
+      {
+        "nm":"Ayam Suir Bali",
+        "cnt":"1 x",
+        "price":"85,000"
+      },
+      {
+        "nm":"Tahu Goreng",
+        "cnt":"2 x",
+        "price":"36,000"
+      },
+      {
+        "nm":"Tempe Goreng",
+        "cnt":"2 x",
+        "price":"36,000"
+      },
+      {
+        "nm":"Tahu Telor Asin",
+        "cnt":"1 x",
+        "price":"40,000."
+      },
+      {
+        "nm":"Nasi Goreng Samb",
+        "cnt":"1 x",
+        "price":"70,000"
+      },
+      {
+        "nm":"Bbk Panggang Sam",
+        "cnt":"3 x",
+        "price":"366,000"
+      },
+      {
+        "nm":"Ayam Sambal Hija",
+        "cnt":"1 x",
+        "price":"92,000"
+      },
+      {
+        "nm":"Hot Tea",
+        "cnt":"2 x",
+        "price":"44,000"
+      },
+      {
+        "nm":"Ice Kopi",
+        "cnt":"1 x",
+        "price":"32,000"
+      },
+      {
+        "nm":"Tahu Telor Asin",
+        "cnt":"1 x",
+        "price":"40,000"
+      },
+      {
+        "nm":"Free Ice Tea",
+        "cnt":"1 x",
+        "price":"0"
+      },
+      {
+        "nm":"Bebek Street",
+        "cnt":"1 x",
+        "price":"44,000"
+      },
+      {
+        "nm":"Ice Tea Tawar",
+        "cnt":"1 x",
+        "price":"18,000"
+      }
+    ],
+    "total":1591600.0,
+    "cash":null,
+    "change":null,
+    "card":null,
+    "subtotal":1346000.0,
+    "tax":144695.0,
+    "service":100950.0,
+    "discount":null
+  },
+  "cord_train_0001":{
+    "id":"cord_train_0001",
+    "file":"data\/cord_subset\/images\/cord_0001.jpg",
+    "menu":[
+      {
+        "nm":"SPGTHY BOLOGNASE",
+        "cnt":"1",
+        "price":"58,000"
+      },
+      {
+        "nm":"PEPPER AUS",
+        "cnt":"1",
+        "price":"165,000",
+        "sub":{
+          "nm":"WELL DONE"
+        }
+      },
+      {
+        "nm":"WAGYU RIBEYE",
+        "cnt":"1",
+        "price":"195,000",
+        "sub":{
+          "nm":"MEDIUM WELL"
+        }
+      },
+      {
+        "nm":"ICED LEMON TEA",
+        "cnt":"1",
+        "price":"22,000"
+      },
+      {
+        "nm":"FUSION TEA LYCHE",
+        "cnt":"1",
+        "price":"28,000"
+      },
+      {
+        "nm":"NUTTELA BROWNIES",
+        "cnt":"1",
+        "price":"35,000"
+      }
+    ],
+    "total":580965.0,
+    "cash":null,
+    "change":null,
+    "card":null,
+    "subtotal":503000.0,
+    "tax":52815.0,
+    "service":25150.0,
+    "discount":null
+  },
+  "cord_train_0002":{
+    "id":"cord_train_0002",
+    "file":"data\/cord_subset\/images\/cord_0002.jpg",
+    "menu":[
+      {
+        "nm":"HAKAU UDANG",
+        "cnt":"4",
+        "price":"92,000"
+      },
+      {
+        "nm":"SIAO MAI BABI",
+        "cnt":"4",
+        "price":"80,000"
+      },
+      {
+        "nm":"CEKER AYAM",
+        "cnt":"3",
+        "price":"60,000"
+      },
+      {
+        "nm":"BAKPAO BKR C CRISPY",
+        "cnt":"2",
+        "price":"42,000"
+      },
+      {
+        "nm":"TAHU GORENG CRISPY",
+        "cnt":"3",
+        "price":"60,000"
+      }
+    ],
+    "total":334000.0,
+    "cash":350000.0,
+    "change":-16000.0,
+    "card":null,
+    "subtotal":334000.0,
+    "tax":null,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0003":{
+    "id":"cord_train_0003",
+    "file":"data\/cord_subset\/images\/cord_0003.jpg",
+    "menu":[
+      {
+        "nm":"Bintang Bremer",
+        "cnt":"1",
+        "price":"59,000"
+      },
+      {
+        "nm":"Chicken H-H",
+        "cnt":"1",
+        "price":"190,000"
+      },
+      {
+        "nm":"Ades",
+        "cnt":"1",
+        "price":"10,000"
+      }
+    ],
+    "total":302016.0,
+    "cash":null,
+    "change":null,
+    "card":null,
+    "subtotal":259000.0,
+    "tax":52416.0,
+    "service":9600.0,
+    "discount":19000.0
+  },
+  "cord_train_0004":{
+    "id":"cord_train_0004",
+    "file":"data\/cord_subset\/images\/cord_0004.jpg",
+    "menu":{
+      "nm":"BASO BIHUN",
+      "unitprice":"43.636",
+      "cnt":"1",
+      "price":"43.636"
+    },
+    "total":48.0,
+    "cash":50.0,
+    "change":2.0,
+    "card":null,
+    "subtotal":43.636,
+    "tax":4.364,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0005":{
+    "id":"cord_train_0005",
+    "file":"data\/cord_subset\/images\/cord_0005.jpg",
+    "menu":[
+      {
+        "nm":"Lasagna",
+        "cnt":"1",
+        "price":"45,000"
+      },
+      {
+        "nm":"Spaghetti ChickPesto",
+        "cnt":"1",
+        "price":"55,000"
+      },
+      {
+        "nm":"BangBang Chick Wings",
+        "cnt":"1",
+        "price":"49,000"
+      },
+      {
+        "nm":"Iced Cappuccino",
+        "cnt":"1",
+        "price":"33,000"
+      },
+      {
+        "nm":"Gypsy Gelato Ice Tea",
+        "cnt":"1",
+        "price":"39,000"
+      }
+    ],
+    "total":261333.0,
+    "cash":null,
+    "change":null,
+    "card":161333.0,
+    "subtotal":221000.0,
+    "tax":23758.0,
+    "service":16575.0,
+    "discount":null
+  },
+  "cord_train_0006":{
+    "id":"cord_train_0006",
+    "file":"data\/cord_subset\/images\/cord_0006.jpg",
+    "menu":[
+      {
+        "nm":"BASO TAHU",
+        "unitprice":"43,181",
+        "cnt":"1",
+        "price":"43,181"
+      },
+      {
+        "nm":"ES JERUK",
+        "unitprice":"13.000",
+        "cnt":"1",
+        "price":"13,000"
+      }
+    ],
+    "total":61799.0,
+    "cash":62000.0,
+    "change":201.0,
+    "card":null,
+    "subtotal":56181.0,
+    "tax":5618.0,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0007":{
+    "id":"cord_train_0007",
+    "file":"data\/cord_subset\/images\/cord_0007.jpg",
+    "menu":{
+      "nm":"PKT AYAM",
+      "price":"33,000"
+    },
+    "total":36300.0,
+    "cash":50000.0,
+    "change":13700.0,
+    "card":null,
+    "subtotal":33000.0,
+    "tax":3300.0,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0008":{
+    "id":"cord_train_0008",
+    "file":"data\/cord_subset\/images\/cord_0008.jpg",
+    "menu":[
+      {
+        "nm":"Kimchi P",
+        "unitprice":"36.000",
+        "cnt":"1x",
+        "price":"36.000"
+      },
+      {
+        "nm":"Fre ice grentea",
+        "unitprice":"0.000",
+        "cnt":"1x",
+        "price":"Rp 0.000"
+      }
+    ],
+    "total":36.0,
+    "cash":51.0,
+    "change":15.0,
+    "card":null,
+    "subtotal":null,
+    "tax":null,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0009":{
+    "id":"cord_train_0009",
+    "file":"data\/cord_subset\/images\/cord_0009.jpg",
+    "menu":{
+      "nm":"THAI ICED TEA",
+      "unitprice":"@20.000",
+      "cnt":"2",
+      "price":"40.000"
+    },
+    "total":40.0,
+    "cash":100.0,
+    "change":60.0,
+    "card":null,
+    "subtotal":40.0,
+    "tax":null,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0010":{
+    "id":"cord_train_0010",
+    "file":"data\/cord_subset\/images\/cord_0010.jpg",
+    "menu":{
+      "nm":"Viet Milk Coffee",
+      "cnt":"1",
+      "price":"25.000",
+      "sub":[
+        {
+          "nm":"+Hot"
+        },
+        {
+          "nm":"+M"
+        }
+      ]
+    },
+    "total":25.0,
+    "cash":30.0,
+    "change":5.0,
+    "card":null,
+    "subtotal":25.0,
+    "tax":null,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0011":{
+    "id":"cord_train_0011",
+    "file":"data\/cord_subset\/images\/cord_0011.jpg",
+    "menu":[
+      {
+        "nm":"Ayam Bakar",
+        "cnt":"2",
+        "price":"55.000"
+      },
+      {
+        "nm":"Nasi Putih",
+        "cnt":"2",
+        "price":"20.000"
+      },
+      {
+        "nm":"Nila Bakar\/Goreng",
+        "cnt":"1",
+        "price":"27,500"
+      },
+      {
+        "nm":"Sop Gurame",
+        "cnt":"1",
+        "price":"87.000"
+      },
+      {
+        "nm":"Teh Poci",
+        "cnt":"1",
+        "price":"25.000"
+      }
+    ],
+    "total":250107.0,
+    "cash":null,
+    "change":null,
+    "card":null,
+    "subtotal":214.5,
+    "tax":22.737,
+    "service":12.87,
+    "discount":null
+  },
+  "cord_train_0012":{
+    "id":"cord_train_0012",
+    "file":"data\/cord_subset\/images\/cord_0012.jpg",
+    "menu":[
+      {
+        "nm":"NASI + AYAM KATSU TER...",
+        "cnt":"1",
+        "price":"31,819"
+      },
+      {
+        "nm":"TEH PANAS",
+        "cnt":"1",
+        "price":"5,455"
+      },
+      {
+        "nm":"ES TEH MANIS",
+        "cnt":"1",
+        "price":"7,273"
+      },
+      {
+        "nm":"CH CORDON BLEU NASI",
+        "cnt":"1",
+        "price":"42,728"
+      }
+    ],
+    "total":96000.0,
+    "cash":null,
+    "change":null,
+    "card":96000.0,
+    "subtotal":87275.0,
+    "tax":8728.0,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0013":{
+    "id":"cord_train_0013",
+    "file":"data\/cord_subset\/images\/cord_0013.jpg",
+    "menu":[
+      {
+        "nm":"BLACK PEPPER MEATBALL",
+        "cnt":"1",
+        "price":"76,500"
+      },
+      {
+        "nm":"GREEN TEA WITH CRUMBLE",
+        "cnt":"1",
+        "price":"56,000"
+      },
+      {
+        "nm":"EARL GREY MILK TEA",
+        "cnt":"1",
+        "price":"57,000"
+      },
+      {
+        "nm":"ORIGINAL BREWED TEA",
+        "cnt":"1",
+        "price":"23,000"
+      }
+    ],
+    "total":247775.0,
+    "cash":null,
+    "change":null,
+    "card":null,
+    "subtotal":212500.0,
+    "tax":22525.0,
+    "service":12750.0,
+    "discount":null
+  },
+  "cord_train_0014":{
+    "id":"cord_train_0014",
+    "file":"data\/cord_subset\/images\/cord_0014.jpg",
+    "menu":[
+      {
+        "nm":"4005-Maple glazed",
+        "unitprice":"25.000",
+        "cnt":"x1",
+        "price":"25.000"
+      },
+      {
+        "nm":"6001-Plastic Bag Small",
+        "unitprice":"0",
+        "cnt":"x1",
+        "price":"0"
+      }
+    ],
+    "total":25.0,
+    "cash":50.0,
+    "change":25.0,
+    "card":null,
+    "subtotal":null,
+    "tax":null,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0015":{
+    "id":"cord_train_0015",
+    "file":"data\/cord_subset\/images\/cord_0015.jpg",
+    "menu":[
+      {
+        "nm":"BLACK PEPPER MEATBALL",
+        "cnt":"1",
+        "price":"76,500"
+      },
+      {
+        "nm":"QUARTO FORMANGGI PASTA",
+        "cnt":"1",
+        "price":"82,500"
+      },
+      {
+        "nm":"GREEN TEA WITH CRUMBLE",
+        "cnt":"1",
+        "price":"56,000"
+      },
+      {
+        "nm":"ORIGINAL BREWED TEA",
+        "cnt":"2",
+        "price":"46,000"
+      }
+    ],
+    "total":304326.0,
+    "cash":null,
+    "change":null,
+    "card":null,
+    "subtotal":261000.0,
+    "tax":27666.0,
+    "service":15660.0,
+    "discount":null
+  },
+  "cord_train_0016":{
+    "id":"cord_train_0016",
+    "file":"data\/cord_subset\/images\/cord_0016.jpg",
+    "menu":{
+      "nm":"- TICKET CP",
+      "num":"901016",
+      "price":"30,000"
+    },
+    "total":30000.0,
+    "cash":null,
+    "change":null,
+    "card":30000.0,
+    "subtotal":30000.0,
+    "tax":null,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0017":{
+    "id":"cord_train_0017",
+    "file":"data\/cord_subset\/images\/cord_0017.jpg",
+    "menu":[
+      {
+        "nm":"RB. COKLAT BAR",
+        "cnt":"1",
+        "price":"8,000"
+      },
+      {
+        "nm":"RB. CREPES TUNA",
+        "cnt":"1",
+        "price":"9,000"
+      },
+      {
+        "nm":"RB. SISIR PANDAN",
+        "cnt":"1",
+        "price":"7,500"
+      }
+    ],
+    "total":24500.0,
+    "cash":50000.0,
+    "change":25500.0,
+    "card":null,
+    "subtotal":24500.0,
+    "tax":null,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0018":{
+    "id":"cord_train_0018",
+    "file":"data\/cord_subset\/images\/cord_0018.jpg",
+    "menu":{
+      "nm":"KING DEAL FISH",
+      "cnt":"1",
+      "price":"25000"
+    },
+    "total":27500.0,
+    "cash":100000.0,
+    "change":72500.0,
+    "card":null,
+    "subtotal":25000.0,
+    "tax":2500.0,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0019":{
+    "id":"cord_train_0019",
+    "file":"data\/cord_subset\/images\/cord_0019.jpg",
+    "menu":[
+      {
+        "nm":"UDANG RE",
+        "unitprice":"216,000",
+        "cnt":"2",
+        "price":"432,000",
+        "sub":{
+          "nm":"=*LARGE*==",
+          "cnt":"2"
+        }
+      },
+      {
+        "nm":"AYM GR JUN NJAN",
+        "cnt":"1",
+        "price":"108,000",
+        "sub":{
+          "nm":"=*MEDIUM*="
+        }
+      },
+      {
+        "nm":"SAPO TH SEAFOOD",
+        "cnt":"1",
+        "price":"172,000",
+        "sub":{
+          "nm":"=*LARGE*=="
+        }
+      },
+      {
+        "nm":"POCAI 3",
+        "unitprice":"111,000",
+        "cnt":"2",
+        "price":"222,000",
+        "sub":{
+          "nm":"=*MEDIUM*=",
+          "cnt":"2"
+        }
+      },
+      {
+        "nm":"GURAME FILLET M ASAM MANIS",
+        "cnt":"1",
+        "price":"163,000"
+      },
+      {
+        "nm":"BIHUN GORENG JJ",
+        "cnt":"1",
+        "price":"116,000",
+        "sub":{
+          "nm":"=*LARGE*=="
+        }
+      },
+      {
+        "nm":"ICED TEA",
+        "unitprice":"12,000",
+        "cnt":"5",
+        "price":"60,000"
+      },
+      {
+        "nm":"NASI PUTIH",
+        "unitprice":"10,000",
+        "cnt":"7",
+        "price":"70,000"
+      }
+    ],
+    "total":1565938.0,
+    "cash":null,
+    "change":null,
+    "card":null,
+    "subtotal":1343000.0,
+    "tax":142358.0,
+    "service":80580.0,
+    "discount":null
+  },
+  "cord_train_0020":{
+    "id":"cord_train_0020",
+    "file":"data\/cord_subset\/images\/cord_0020.jpg",
+    "menu":[
+      {
+        "nm":"BUBUR UNGU",
+        "discountprice":"-7,800",
+        "price":"26,000"
+      },
+      {
+        "nm":"SENDOK BEBEK",
+        "price":"0"
+      },
+      {
+        "nm":"WAJIK",
+        "discountprice":"-2,100",
+        "price":"7,000"
+      },
+      {
+        "nm":"CENTIK MANIS",
+        "discountprice":"-1,650",
+        "price":"5,500"
+      },
+      {
+        "nm":"PLASTIK SEDANG",
+        "price":"0"
+      }
+    ],
+    "total":26950.0,
+    "cash":26950.0,
+    "change":null,
+    "card":null,
+    "subtotal":26950.0,
+    "tax":null,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0021":{
+    "id":"cord_train_0021",
+    "file":"data\/cord_subset\/images\/cord_0021.jpg",
+    "menu":[
+      {
+        "nm":"1001-Choco Bun",
+        "unitprice":"22.000",
+        "cnt":"x1",
+        "price":"22.000"
+      },
+      {
+        "nm":"2001-Hokkaido Milk Toast",
+        "unitprice":"22.000",
+        "cnt":"x1",
+        "price":"22.000"
+      },
+      {
+        "nm":"6002-Plastic Bag Medium",
+        "unitprice":"0",
+        "cnt":"x1",
+        "price":"0"
+      }
+    ],
+    "total":44.0,
+    "cash":50.0,
+    "change":6.0,
+    "card":null,
+    "subtotal":null,
+    "tax":null,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0022":{
+    "id":"cord_train_0022",
+    "file":"data\/cord_subset\/images\/cord_0022.jpg",
+    "menu":{
+      "nm":"Ice t grentea",
+      "unitprice":"22.000",
+      "cnt":"1x",
+      "price":"22.000"
+    },
+    "total":22.0,
+    "cash":100.0,
+    "change":78.0,
+    "card":null,
+    "subtotal":null,
+    "tax":null,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0023":{
+    "id":"cord_train_0023",
+    "file":"data\/cord_subset\/images\/cord_0023.jpg",
+    "menu":{
+      "nm":"S-Lemon Macchiato",
+      "unitprice":"@21,000",
+      "cnt":"1X",
+      "price":"21,000",
+      "sub":[
+        {
+          "nm":"Less Ice"
+        },
+        {
+          "nm":"50%"
+        }
+      ]
+    },
+    "total":21000.0,
+    "cash":21000.0,
+    "change":0.0,
+    "card":null,
+    "subtotal":21000.0,
+    "tax":0.0,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0024":{
+    "id":"cord_train_0024",
+    "file":"data\/cord_subset\/images\/cord_0024.jpg",
+    "menu":[
+      {
+        "nm":"1001-Choco Bun",
+        "unitprice":"22.000",
+        "cnt":"x1",
+        "price":"22.000"
+      },
+      {
+        "nm":"1032-Double Cheddar",
+        "unitprice":"26.000",
+        "cnt":"x1",
+        "price":"26.000"
+      },
+      {
+        "nm":"6002-Plastic Bag Medium",
+        "unitprice":"0",
+        "cnt":"x1",
+        "price":"0"
+      }
+    ],
+    "total":48.0,
+    "cash":null,
+    "change":null,
+    "card":48.0,
+    "subtotal":null,
+    "tax":null,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0025":{
+    "id":"cord_train_0025",
+    "file":"data\/cord_subset\/images\/cord_0025.jpg",
+    "menu":{
+      "nm":"CRISPY CHOCO",
+      "price":"14,000"
+    },
+    "total":14000.0,
+    "cash":20000.0,
+    "change":6000.0,
+    "card":null,
+    "subtotal":null,
+    "tax":null,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0026":{
+    "id":"cord_train_0026",
+    "file":"data\/cord_subset\/images\/cord_0026.jpg",
+    "menu":{
+      "nm":"Pepenero Pastel",
+      "unitprice":"15.000",
+      "cnt":"1x",
+      "price":"15.000"
+    },
+    "total":16.5,
+    "cash":50.5,
+    "change":34.0,
+    "card":null,
+    "subtotal":15.0,
+    "tax":1.5,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0027":{
+    "id":"cord_train_0027",
+    "file":"data\/cord_subset\/images\/cord_0027.jpg",
+    "menu":{
+      "nm":"MEGA",
+      "price":"Rp 30,000",
+      "sub":[
+        {
+          "nm":"CUP MEGA"
+        },
+        {
+          "nm":"BBQ"
+        }
+      ]
+    },
+    "total":30000.0,
+    "cash":100000.0,
+    "change":70000.0,
+    "card":null,
+    "subtotal":null,
+    "tax":null,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0028":{
+    "id":"cord_train_0028",
+    "file":"data\/cord_subset\/images\/cord_0028.jpg",
+    "menu":{
+      "nm":"A.MINERAL BOTOL",
+      "unitprice":"8.000",
+      "cnt":"1",
+      "price":"8,000"
+    },
+    "total":8800.0,
+    "cash":10000.0,
+    "change":1200.0,
+    "card":null,
+    "subtotal":8.0,
+    "tax":800.0,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0029":{
+    "id":"cord_train_0029",
+    "file":"data\/cord_subset\/images\/cord_0029.jpg",
+    "menu":[
+      {
+        "nm":"AMBUSH DBL CHS BURG",
+        "cnt":"11",
+        "price":"181,500.00"
+      },
+      {
+        "nm":"AMBUSH CHS BURGER",
+        "cnt":"4",
+        "price":"44,000.00"
+      },
+      {
+        "nm":"TAKE AWAY CHARGE",
+        "cnt":"1",
+        "price":"1,000.00"
+      }
+    ],
+    "total":226500.0,
+    "cash":250000.0,
+    "change":23500.0,
+    "card":null,
+    "subtotal":226500.0,
+    "tax":null,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0030":{
+    "id":"cord_train_0030",
+    "file":"data\/cord_subset\/images\/cord_0030.jpg",
+    "menu":[
+      {
+        "nm":"VANDOOLEN",
+        "price":"8,182"
+      },
+      {
+        "nm":"PLASTIK 25",
+        "price":"0"
+      }
+    ],
+    "total":9000.0,
+    "cash":100000.0,
+    "change":91000.0,
+    "card":null,
+    "subtotal":8182.0,
+    "tax":818.0,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0031":{
+    "id":"cord_train_0031",
+    "file":"data\/cord_subset\/images\/cord_0031.jpg",
+    "menu":[
+      {
+        "nm":"Chicken HCC, 1Pcs",
+        "cnt":"1",
+        "price":"15,000"
+      },
+      {
+        "nm":"Colonel Burger",
+        "cnt":"1",
+        "price":"13,636"
+      }
+    ],
+    "total":31500.0,
+    "cash":40000.0,
+    "change":8500.0,
+    "card":null,
+    "subtotal":28636.0,
+    "tax":2864.0,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0032":{
+    "id":"cord_train_0032",
+    "file":"data\/cord_subset\/images\/cord_0032.jpg",
+    "menu":{
+      "nm":"Ketoprak",
+      "cnt":"1",
+      "price":"36,000"
+    },
+    "total":36000.0,
+    "cash":36000.0,
+    "change":null,
+    "card":null,
+    "subtotal":36000.0,
+    "tax":null,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0033":{
+    "id":"cord_train_0033",
+    "file":"data\/cord_subset\/images\/cord_0033.jpg",
+    "menu":[
+      {
+        "nm":"AREM - AREM",
+        "unitprice":"@8000",
+        "cnt":"1X",
+        "discountprice":"-3,200",
+        "price":"8,000"
+      },
+      {
+        "nm":"LEMPER",
+        "unitprice":"@9000",
+        "cnt":"1X",
+        "discountprice":"-3,600",
+        "price":"9,000"
+      },
+      {
+        "nm":"PLASTIK KECIL",
+        "unitprice":"@0",
+        "cnt":"1X",
+        "price":"0"
+      }
+    ],
+    "total":10200.0,
+    "cash":20000.0,
+    "change":9800.0,
+    "card":null,
+    "subtotal":10200.0,
+    "tax":null,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0034":{
+    "id":"cord_train_0034",
+    "file":"data\/cord_subset\/images\/cord_0034.jpg",
+    "menu":{
+      "nm":"OMA NASI KUNING CAKALANG MANI",
+      "unitprice":"30.000",
+      "cnt":"1",
+      "price":"30.000"
+    },
+    "total":30.0,
+    "cash":100.0,
+    "change":70.0,
+    "card":null,
+    "subtotal":null,
+    "tax":null,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0035":{
+    "id":"cord_train_0035",
+    "file":"data\/cord_subset\/images\/cord_0035.jpg",
+    "menu":{
+      "nm":"Cuka Apel Moringa",
+      "unitprice":"289000",
+      "cnt":"1",
+      "price":"289000"
+    },
+    "total":null,
+    "cash":300000.0,
+    "change":11000.0,
+    "card":null,
+    "subtotal":289000.0,
+    "tax":null,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0036":{
+    "id":"cord_train_0036",
+    "file":"data\/cord_subset\/images\/cord_0036.jpg",
+    "menu":[
+      {
+        "nm":"GONG GIBAB",
+        "cnt":"1",
+        "price":"20,000"
+      },
+      {
+        "nm":"BO SSAM",
+        "cnt":"1",
+        "price":"320,000"
+      },
+      {
+        "nm":"HAEMUL DENJANG JJIGAE",
+        "cnt":"1",
+        "price":"85,000"
+      },
+      {
+        "nm":"MULNAENGMYO N",
+        "cnt":"1",
+        "price":"85,000"
+      }
+    ],
+    "total":599955.0,
+    "cash":null,
+    "change":null,
+    "card":null,
+    "subtotal":510000.0,
+    "tax":54255.0,
+    "service":35700.0,
+    "discount":0.0
+  },
+  "cord_train_0037":{
+    "id":"cord_train_0037",
+    "file":"data\/cord_subset\/images\/cord_0037.jpg",
+    "menu":{
+      "nm":"MINI CHOCO",
+      "price":"13,500"
+    },
+    "total":13500.0,
+    "cash":14000.0,
+    "change":500.0,
+    "card":null,
+    "subtotal":12273.0,
+    "tax":1227.0,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0038":{
+    "id":"cord_train_0038",
+    "file":"data\/cord_subset\/images\/cord_0038.jpg",
+    "menu":{
+      "nm":"DumDum Thai Iced Green Tea",
+      "cnt":"1",
+      "price":"24.000"
+    },
+    "total":24.0,
+    "cash":50.0,
+    "change":26.0,
+    "card":null,
+    "subtotal":null,
+    "tax":null,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0039":{
+    "id":"cord_train_0039",
+    "file":"data\/cord_subset\/images\/cord_0039.jpg",
+    "menu":{
+      "nm":"H COUPLE SEA",
+      "price":"70,000"
+    },
+    "total":70000.0,
+    "cash":70000.0,
+    "change":null,
+    "card":null,
+    "subtotal":null,
+    "tax":null,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0040":{
+    "id":"cord_train_0040",
+    "file":"data\/cord_subset\/images\/cord_0040.jpg",
+    "menu":[
+      {
+        "nm":"BURGER CHIC DECKER",
+        "cnt":"1",
+        "price":"68,000"
+      },
+      {
+        "nm":"Home Made Lemonade",
+        "cnt":"1",
+        "price":"40,000"
+      }
+    ],
+    "total":125334.0,
+    "cash":null,
+    "change":null,
+    "card":125334.0,
+    "subtotal":108000.0,
+    "tax":11394.0,
+    "service":5940.0,
+    "discount":null
+  },
+  "cord_train_0041":{
+    "id":"cord_train_0041",
+    "file":"data\/cord_subset\/images\/cord_0041.jpg",
+    "menu":{
+      "nm":"KOREAN CURRY M",
+      "cnt":"1",
+      "price":"40,909"
+    },
+    "total":44999.0,
+    "cash":45000.0,
+    "change":0.0,
+    "card":null,
+    "subtotal":40909.0,
+    "tax":4090.0,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0042":{
+    "id":"cord_train_0042",
+    "file":"data\/cord_subset\/images\/cord_0042.jpg",
+    "menu":{
+      "nm":"ALMOND CHOCO CREAMCHEESE",
+      "unitprice":"28,000",
+      "cnt":"1 x",
+      "price":"28,000"
+    },
+    "total":28000.0,
+    "cash":28000.0,
+    "change":0.0,
+    "card":null,
+    "subtotal":28000.0,
+    "tax":null,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0043":{
+    "id":"cord_train_0043",
+    "file":"data\/cord_subset\/images\/cord_0043.jpg",
+    "menu":[
+      {
+        "nm":"Nutella Cheese",
+        "cnt":"1",
+        "price":"27,272"
+      },
+      {
+        "nm":"Toblerone BanCheese",
+        "cnt":"1",
+        "price":"28,182"
+      }
+    ],
+    "total":60999.0,
+    "cash":null,
+    "change":null,
+    "card":60999.0,
+    "subtotal":55454.0,
+    "tax":5545.0,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0044":{
+    "id":"cord_train_0044",
+    "file":"data\/cord_subset\/images\/cord_0044.jpg",
+    "menu":[
+      {
+        "nm":"CHOCO PUFF",
+        "cnt":"1",
+        "price":"29,091"
+      },
+      {
+        "nm":"CREAMY BEEF CLS FTC",
+        "cnt":"1",
+        "price":"42,727"
+      },
+      {
+        "nm":"NEW ORIENTAL CHK RICE",
+        "cnt":"1",
+        "price":"34,545"
+      },
+      {
+        "nm":"LIPTON PITCHER",
+        "cnt":"1",
+        "price":"54,545"
+      },
+      {
+        "nm":"SC\/P SUPER SUPREME",
+        "cnt":"1",
+        "price":"47,273"
+      },
+      {
+        "nm":"CB\/P BLACK PEPP BEEF",
+        "cnt":"1",
+        "price":"48,182"
+      }
+    ],
+    "total":282000.0,
+    "cash":null,
+    "change":null,
+    "card":null,
+    "subtotal":256363.0,
+    "tax":25637.0,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0045":{
+    "id":"cord_train_0045",
+    "file":"data\/cord_subset\/images\/cord_0045.jpg",
+    "menu":[
+      {
+        "nm":"1",
+        "cnt":"2",
+        "price":"22.000"
+      },
+      {
+        "nm":"Large *Plastik Kcl",
+        "cnt":"1",
+        "price":"0"
+      }
+    ],
+    "total":22.0,
+    "cash":52.0,
+    "change":30.0,
+    "card":null,
+    "subtotal":null,
+    "tax":null,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0046":{
+    "id":"cord_train_0046",
+    "file":"data\/cord_subset\/images\/cord_0046.jpg",
+    "menu":{
+      "nm":"BASO TAHU BIHUN",
+      "unitprice":"43.636",
+      "cnt":"1",
+      "price":"43.636"
+    },
+    "total":48.0,
+    "cash":100.0,
+    "change":52.0,
+    "card":null,
+    "subtotal":43.636,
+    "tax":4.364,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0047":{
+    "id":"cord_train_0047",
+    "file":"data\/cord_subset\/images\/cord_0047.jpg",
+    "menu":{
+      "nm":"ICED TT",
+      "price":"20,000"
+    },
+    "total":20000.0,
+    "cash":50000.0,
+    "change":30000.0,
+    "card":null,
+    "subtotal":null,
+    "tax":null,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0048":{
+    "id":"cord_train_0048",
+    "file":"data\/cord_subset\/images\/cord_0048.jpg",
+    "menu":[
+      {
+        "nm":"Jamur Crispy",
+        "unitprice":"13.500",
+        "cnt":"2",
+        "price":"27.000"
+      },
+      {
+        "nm":"Nasi Putih",
+        "unitprice":"7.000",
+        "cnt":"2",
+        "price":"14.000"
+      },
+      {
+        "nm":"Sambel Kecap",
+        "unitprice":"4.500",
+        "cnt":"2",
+        "price":"9.000"
+      },
+      {
+        "nm":"Es Teh",
+        "unitprice":"7.500",
+        "cnt":"2",
+        "price":"15.000"
+      }
+    ],
+    "total":73.45,
+    "cash":100.0,
+    "change":26.55,
+    "card":null,
+    "subtotal":65.0,
+    "tax":6.5,
+    "service":1.95,
+    "discount":null
+  },
+  "cord_train_0049":{
+    "id":"cord_train_0049",
+    "file":"data\/cord_subset\/images\/cord_0049.jpg",
+    "menu":{
+      "nm":"Sweet Plum Potato",
+      "cnt":"1",
+      "price":"29,000"
+    },
+    "total":29000.0,
+    "cash":29000.0,
+    "change":0.0,
+    "card":null,
+    "subtotal":29000.0,
+    "tax":null,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0050":{
+    "id":"cord_train_0050",
+    "file":"data\/cord_subset\/images\/cord_0050.jpg",
+    "menu":[
+      {
+        "nm":"CHO MOUSSE",
+        "price":"20,000"
+      },
+      {
+        "nm":"GRAPE JELLY",
+        "price":"13,000"
+      }
+    ],
+    "total":33000.0,
+    "cash":50000.0,
+    "change":17000.0,
+    "card":null,
+    "subtotal":30000.0,
+    "tax":3000.0,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0051":{
+    "id":"cord_train_0051",
+    "file":"data\/cord_subset\/images\/cord_0051.jpg",
+    "menu":[
+      {
+        "nm":"Kopi Susu Sudirman",
+        "unitprice":"18.000",
+        "cnt":"1x",
+        "price":"18.000",
+        "sub":{
+          "nm":"Ice"
+        }
+      },
+      {
+        "nm":"Chocolate Twist",
+        "unitprice":"12.000",
+        "cnt":"1x",
+        "price":"12.000"
+      }
+    ],
+    "total":33.0,
+    "cash":50.0,
+    "change":17.0,
+    "card":null,
+    "subtotal":30.0,
+    "tax":3.0,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0052":{
+    "id":"cord_train_0052",
+    "file":"data\/cord_subset\/images\/cord_0052.jpg",
+    "menu":[
+      {
+        "nm":"RTD Kunyit",
+        "unitprice":"15000",
+        "cnt":"1",
+        "price":"15000"
+      },
+      {
+        "nm":"Tepung Jagung",
+        "unitprice":"15000",
+        "cnt":"1",
+        "price":"15000"
+      }
+    ],
+    "total":null,
+    "cash":30000.0,
+    "change":0.0,
+    "card":null,
+    "subtotal":30000.0,
+    "tax":null,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0053":{
+    "id":"cord_train_0053",
+    "file":"data\/cord_subset\/images\/cord_0053.jpg",
+    "menu":[
+      {
+        "unitprice":"12.000",
+        "cnt":"3",
+        "price":"36.000"
+      },
+      {
+        "nm":"SHOPPING BAG ROTI'O' 370\/M",
+        "unitprice":"0",
+        "cnt":"1",
+        "price":"0"
+      }
+    ],
+    "total":36.0,
+    "cash":null,
+    "change":0.0,
+    "card":36.0,
+    "subtotal":36.0,
+    "tax":null,
+    "service":null,
+    "discount":0.0
+  },
+  "cord_train_0054":{
+    "id":"cord_train_0054",
+    "file":"data\/cord_subset\/images\/cord_0054.jpg",
+    "menu":[
+      {
+        "nm":"KFC Winger HC",
+        "cnt":"1",
+        "price":"20,000"
+      },
+      {
+        "nm":"Rice",
+        "cnt":"1",
+        "price":"6,364"
+      }
+    ],
+    "total":29000.0,
+    "cash":30000.0,
+    "change":1000.0,
+    "card":null,
+    "subtotal":26364.0,
+    "tax":2636.0,
+    "service":null,
+    "discount":null
+  },
+  "cord_train_0055":{
+    "id":"cord_train_0055",
+    "file":"data\/cord_subset\/images\/cord_0055.jpg",
+    "menu":{
+      "nm":"THAI ICED TEA (L)",
+      "unitprice":"16,363",
+      "cnt":"1 X",
+      "price":"16,363"
+    },
+    "total":17999.0,
+    "cash":null,
+    "change":null,
+    "card":null,
+    "subtotal":16363.0,
+    "tax":1636.0,
+    "service":null,
+    "discount":null
+  }
+}
