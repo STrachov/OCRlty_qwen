@@ -69,6 +69,13 @@ TASK_SPECS: Dict[str, Dict[str, str]] = {
         "prompt_file": "receipt_fields_v1.txt",
         "prompt_name": "default_prompt_receipt_fields_v1",
     },
+    # New tasks (add files under app/schemas and app/prompts)
+    "payment_v1": {
+        "schema_file": "payment_v1.schema.json",
+        "schema_name": "payment_v1",
+        "prompt_file": "payment_v1.txt",
+        "prompt_name": "payment_v1",
+    },
     "items_light_v1": {
         "schema_file": "items_light_v1.schema.json",
         "schema_name": "items_light_v1",
@@ -233,6 +240,18 @@ class BatchExtractRequest(BaseModel):
     concurrency: int = Field(default=4, ge=1, le=32, description="Number of concurrent requests within this process.")
     run_id: Optional[str] = Field(default=None, description="Optional run id (used to build per-image request_id).")
 
+    gt_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional path to GT JSON. If provided, the server will run batch eval vs GT after batch_extract. "
+            "For safety this requires DEBUG_MODE=1 and scope debug:run. Path must be under DATA_ROOT or ARTIFACTS_DIR."
+        ),
+    )
+    gt_image_key: str = Field(
+        default="image",
+        description="Key in each GT record that contains image path/name (basename is used). Fallback: image_file.",
+    )
+
 
 class BatchExtractResponse(BaseModel):
     run_id: str
@@ -247,6 +266,9 @@ class BatchExtractResponse(BaseModel):
 
     timings_ms: Dict[str, float]
     batch_artifact_path: str
+
+    eval: Optional[Dict[str, Any]] = Field(default=None, description="Optional eval result (if gt_path was provided).")
+    eval_artifact_path: Optional[str] = Field(default=None, description="Path to saved eval artifact JSON (if gt_path was provided).")
 
 
 
@@ -304,6 +326,21 @@ def _save_batch_artifact(run_id: str, payload: Dict[str, Any]) -> str:
     _validate_request_id_for_fs(run_id)
     out_dir = _ensure_batch_artifacts_dir()
     path = out_dir / f"{run_id}.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return str(path)
+
+
+def _ensure_eval_artifacts_dir() -> Path:
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    out_dir = ARTIFACTS_DIR / "evals" / day
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir
+
+
+def _save_eval_artifact(eval_id: str, payload: Dict[str, Any]) -> str:
+    _validate_request_id_for_fs(eval_id)
+    out_dir = _ensure_eval_artifacts_dir()
+    path = out_dir / f"{eval_id}.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return str(path)
 
@@ -1990,7 +2027,7 @@ async def batch_extract(
                 artifact_rel = _to_artifact_rel(art_p) if art_p is not None else None
 
                 return {
-                    "file": rel_path,
+                    "image": rel_path,
                     "request_id": resp.request_id,
                     "artifact_rel": artifact_rel,
                     "ok": True,
@@ -2007,7 +2044,7 @@ async def batch_extract(
                     _mk_err("http_error", f"HTTP {he.status_code}: {he.detail}")
                 ]
                 return {
-                    "file": rel_path,
+                    "image": rel_path,
                     "request_id": request_id,
                     "artifact_rel": artifact_rel,
                     "ok": False,
@@ -2021,7 +2058,7 @@ async def batch_extract(
                     _mk_err("exception", f"{e.__class__.__name__}: {e}")
                 ]
                 return {
-                    "file": rel_path,
+                    "image": rel_path,
                     "request_id": request_id,
                     "artifact_rel": artifact_rel,
                     "ok": False,
@@ -2078,6 +2115,45 @@ async def batch_extract(
             "items": items,
         },
     )
+    # --- AUTO-EVAL (optional) ---
+    eval_obj: Optional[Dict[str, Any]] = None
+    eval_artifact_path: Optional[str] = None
+    if req.gt_path:
+        # Evaluating against a server-side GT file is considered a DEBUG operation.
+        # Eval uses the same permissions as the debug eval endpoint: DEBUG_MODE=1 and scope debug:read_raw.
+        _debug_enabled()
+        if settings.AUTH_ENABLED and ("debug:read_raw" not in principal.scopes):
+            raise HTTPException(status_code=403, detail="Missing required scope: debug:read_raw")
+
+        # Validate GT path early for a clearer error.
+        _validate_under_any_root(Path(req.gt_path), roots=[DATA_ROOT, ARTIFACTS_DIR])
+
+        # Reuse the same evaluation logic as the debug endpoint.
+        eval_req = EvalBatchVsGTRequest(
+            run_id=run_id,
+            batch_date=Path(batch_artifact_path).parent.name,
+            gt_path=req.gt_path,
+            gt_image_key=req.gt_image_key or "image",
+            include_samples=False,
+            str_mode="exact",
+        )
+        eval_resp = await eval_batch_vs_gt(eval_req)
+        eval_obj = eval_resp.model_dump()
+
+        # Save eval artifact for later inspection.
+        eval_id = f"{run_id}__eval_{uuid.uuid4().hex[:8]}"
+        eval_artifact_path = _save_eval_artifact(
+            eval_id,
+            {
+                "eval_id": eval_id,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "run_id": run_id,
+                "gt_path": req.gt_path,
+                "batch_artifact_path": batch_artifact_path,
+                **eval_obj,
+            },
+        )
+
 
     return BatchExtractResponse(
         run_id=run_id,
@@ -2090,4 +2166,6 @@ async def batch_extract(
         schema_failed=schema_failed,
         timings_ms={"total_ms": (t1 - t0) * 1000.0},
         batch_artifact_path=batch_artifact_path,
+        eval=eval_obj,
+        eval_artifact_path=eval_artifact_path,
     )
