@@ -12,6 +12,7 @@ import json
 import mimetypes
 import os
 import re
+import unicodedata
 import time
 import uuid
 import tarfile
@@ -1016,15 +1017,6 @@ def _deref_schema(schema: Dict[str, Any], root_schema: Dict[str, Any]) -> Dict[s
     return schema
 
 
-def _normalize_string(s: str, mode: str) -> str:
-    if mode == "exact":
-        return s
-    out = s.strip()
-    if mode == "strip_collapse":
-        out = re.sub(r"\s+", " ", out)
-    return out
-
-
 def _safe_scalar(v: Any, max_len: int = 200) -> Any:
     # Keep response JSON small and stable.
     if v is _MISSING:
@@ -1055,35 +1047,271 @@ def _get_prop(obj: Any, key: str, *, key_fallbacks: bool = False) -> Any:
     return _MISSING
 
 
-def _compare_scalar(pred: Any, gt: Any, *, str_mode: str) -> Tuple[bool, str]:
-    # Returns (match, reason_if_mismatch_or_note)
-    if gt is _MISSING:
-        return False, "gt_missing"
-    if pred is _MISSING:
-        return False, "pred_missing"
+def _get_decimal_sep() -> str:
+    """Decimal separator preference for numeric parsing.
 
-    # Normalize strings if requested
-    if isinstance(gt, str) and isinstance(pred, str):
-        g2 = _normalize_string(gt, str_mode)
-        p2 = _normalize_string(pred, str_mode)
-        if g2 == p2:
-            return True, "ok"
-        return False, "value_mismatch"
+    OCRLTY_DECIMAL_SEP:
+      - "auto" (default): infer from the string
+      - "."              : dot is decimal separator
+      - ","              : comma is decimal separator
+    """
+    v = (os.getenv("OCRLTY_DECIMAL_SEP", "auto") or "auto").strip().lower()
+    if v in {".", ","}:
+        return v
+    return "auto"
 
-    # integer vs number: compare numerically if both numeric
-    if isinstance(gt, (int, float)) and isinstance(pred, (int, float)) and not isinstance(gt, bool) and not isinstance(pred, bool):
-        if float(gt) == float(pred):
-            return True, "ok"
-        return False, "value_mismatch"
 
-    if gt == pred:
-        return True, "ok"
+def canon_x_string(v: Any, *, mode: str = "strip_collapse") -> Tuple[bool, Optional[str], Optional[str]]:
+    """x-string canonicalization.
 
-    # Type mismatch is useful to surface
-    if _json_type(gt) != _json_type(pred):
-        return False, "type_mismatch"
+    - None -> ok, None
+    - other -> stringified + NFKC normalized
+    - mode: exact | strip | strip_collapse
+    - empty string -> None (treat as null-like noise)
+    """
+    if v is None:
+        return True, None, None
 
-    return False, "value_mismatch"
+    try:
+        s = v if isinstance(v, str) else str(v)
+    except Exception:
+        return False, None, "to_string_failed"
+
+    s = unicodedata.normalize("NFKC", s)
+
+    if mode == "exact":
+        out = s
+    else:
+        out = s.strip()
+        if mode == "strip_collapse":
+            out = re.sub(r"\s+", " ", out)
+
+    if out == "":
+        return True, None, None
+
+    return True, out, None
+
+
+def canon_x_count(v: Any) -> Tuple[bool, Optional[int], Optional[str]]:
+    """x-count canonicalization (quantity / count).
+
+    Accepts:
+      - int
+      - float (only if int-like)
+      - string (extracts first integer anywhere: "1 X" -> 1, "x2" -> 2)
+      - None -> ok, None
+    """
+    if v is None:
+        return True, None, None
+
+    if isinstance(v, bool):
+        return False, None, "bool_not_allowed"
+
+    if isinstance(v, int) and not isinstance(v, bool):
+        return True, int(v), None
+
+    if isinstance(v, float):
+        if abs(v - round(v)) <= 1e-9:
+            return True, int(round(v)), None
+        return False, None, "float_not_intlike"
+
+    if not isinstance(v, str):
+        try:
+            v = str(v)
+        except Exception:
+            return False, None, "to_string_failed"
+
+    s = v.strip()
+    if s == "":
+        return True, None, None
+
+    m = re.search(r"[+-]?\d+", s)
+    if not m:
+        return False, None, "no_int_found"
+
+    try:
+        return True, int(m.group(0)), None
+    except Exception:
+        return False, None, "int_parse_failed"
+
+
+def canon_x_money(v: Any) -> Tuple[bool, Optional[float], Optional[str]]:
+    """x-money canonicalization.
+
+    Goal: turn things like "261,333", "Rp 73.450", "1 234,56" into a number.
+
+    - None -> ok, None
+    - int/float -> float
+    - string -> parse with OCRLTY_DECIMAL_SEP (auto/. /,)
+    """
+    if v is None:
+        return True, None, None
+
+    if isinstance(v, bool):
+        return False, None, "bool_not_allowed"
+
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return True, float(v), None
+
+    if not isinstance(v, str):
+        try:
+            v = str(v)
+        except Exception:
+            return False, None, "to_string_failed"
+
+    s = v.strip()
+    if s == "":
+        return True, None, None
+
+    # Keep digits, separators, sign; drop currency/letters/spaces.
+    s = re.sub(r"[^0-9,\.\-+]", "", s)
+    if not re.search(r"\d", s):
+        return False, None, "no_digits"
+
+    dec_pref = _get_decimal_sep()
+
+    def _collapse_dots(x: str) -> str:
+        # Collapse multiple dots to a single decimal dot (keep last as decimal).
+        if x.count(".") <= 1:
+            return x
+        parts = x.split(".")
+        return "".join(parts[:-1]) + "." + parts[-1]
+
+    def parse_with_decimal_sep(raw: str, dec: str) -> Optional[float]:
+        other = "," if dec == "." else "."
+        x = raw.replace(other, "")
+        if dec == ",":
+            x = x.replace(",", ".")
+        x = _collapse_dots(x)
+        try:
+            return float(x)
+        except Exception:
+            return None
+
+    def parse_auto(raw: str) -> Optional[float]:
+        x = raw
+        has_comma = "," in x
+        has_dot = "." in x
+
+        if has_comma and has_dot:
+            # right-most separator is decimal, the other is thousands
+            dec = "." if x.rfind(".") > x.rfind(",") else ","
+            return parse_with_decimal_sep(x, dec)
+
+        if has_comma:
+            left, right = x.rsplit(",", 1)
+            # if 1-2 digits after comma -> likely decimals
+            if re.fullmatch(r"\d{1,2}", right or ""):
+                return parse_with_decimal_sep(x, ",")
+            # if exactly 3 digits -> likely thousands
+            if re.fullmatch(r"\d{3}", right or ""):
+                try:
+                    return float((left + right).replace(",", ""))
+                except Exception:
+                    return None
+            # fallback: treat commas as thousands
+            try:
+                return float(x.replace(",", ""))
+            except Exception:
+                return None
+
+        if has_dot:
+            # multiple dots: likely thousands separators
+            if x.count(".") > 1:
+                try:
+                    return float(x.replace(".", ""))
+                except Exception:
+                    return None
+            left, right = x.rsplit(".", 1)
+            # if exactly 3 digits -> thousands
+            if re.fullmatch(r"\d{3}", right or ""):
+                try:
+                    return float(left + right)
+                except Exception:
+                    return None
+            return parse_with_decimal_sep(x, ".")
+
+        try:
+            return float(x)
+        except Exception:
+            return None
+
+    out: Optional[float]
+    if dec_pref in {".", ","}:
+        out = parse_with_decimal_sep(s, dec_pref)
+    else:
+        out = parse_auto(s)
+
+    if out is None:
+        return False, None, "parse_fail"
+    return True, out, None
+
+
+def _canon_value(v: Any, *, fmt: Optional[str], str_mode: str) -> Tuple[bool, Any, Optional[str]]:
+    """Canonicalize a scalar value given a schema format hint."""
+    if v is _MISSING:
+        return False, None, "missing"
+
+    f = (fmt or "").strip().lower()
+    if f in {"x-string", "x-str", "string"}:
+        return canon_x_string(v, mode=str_mode)
+    if f in {"x-count", "x-int", "x-integer", "count"}:
+        return canon_x_count(v)
+    if f in {"x-money", "x-number", "money", "number"}:
+        return canon_x_money(v)
+
+    # No explicit format -> conservative fallback.
+    if isinstance(v, str) or v is None:
+        return canon_x_string(v, mode=str_mode)
+
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return True, float(v), None
+
+    # last resort: stringify
+    return canon_x_string(v, mode=str_mode)
+
+
+def _compare_canon(
+    pred_raw: Any,
+    gt_raw: Any,
+    *,
+    fmt: Optional[str],
+    str_mode: str,
+) -> Tuple[bool, str, Any, Any]:
+    """Compare leaf scalar values with canonicalization.
+
+    Returns:
+      (matched, reason, pred_value_canon, gt_value_canon)
+    """
+    if gt_raw is _MISSING:
+        return False, "gt_missing", None, None
+    if pred_raw is _MISSING:
+        return False, "pred_missing", None, None
+
+    ok_gt, gt_v, gt_err = _canon_value(gt_raw, fmt=fmt, str_mode=str_mode)
+    ok_pred, pred_v, pred_err = _canon_value(pred_raw, fmt=fmt, str_mode=str_mode)
+
+    if not ok_gt and not ok_pred:
+        return False, "canon_errors", pred_v, gt_v
+    if not ok_gt:
+        return False, "gt_canon_error", pred_v, gt_v
+    if not ok_pred:
+        return False, "pred_canon_error", pred_v, gt_v
+
+    if gt_v is None and pred_v is None:
+        return True, "ok", pred_v, gt_v
+    if (gt_v is None) != (pred_v is None):
+        return False, "value_mismatch", pred_v, gt_v
+
+    f = (fmt or "").strip().lower()
+    if f in {"x-money", "x-number", "money", "number"} and isinstance(gt_v, (int, float)) and isinstance(pred_v, (int, float)):
+        if math.isclose(float(gt_v), float(pred_v), rel_tol=0.0, abs_tol=1e-6):
+            return True, "ok", pred_v, gt_v
+        return False, "value_mismatch", pred_v, gt_v
+
+    if gt_v == pred_v:
+        return True, "ok", pred_v, gt_v
+    return False, "value_mismatch", pred_v, gt_v
 
 
 def _walk_schema(
@@ -1112,7 +1340,6 @@ def _walk_schema(
         props = schema_eff.get("properties", {})
         if not isinstance(props, dict):
             props = {}
-        # If pred/gt are not dicts (or missing), treat children as missing.
         pred_obj = pred if isinstance(pred, dict) else {}
         gt_obj = gt if isinstance(gt, dict) else {}
 
@@ -1160,7 +1387,6 @@ def _walk_schema(
         return
 
     # Scalar leaf
-    # Path string
     def _fmt_path(pth: Tuple[Union[str, int, None], ...]) -> str:
         out = ""
         for seg in pth:
@@ -1173,37 +1399,59 @@ def _walk_schema(
         return out or "<root>"
 
     path_str = _fmt_path(path)
-
     m = metrics.setdefault(path_str, defaultdict(int))
     m["total"] += 1
+
     if gt is _MISSING:
         m["gt_missing"] += 1
-        # Not comparable; nothing else to do
         return
+
     m["comparable"] += 1
 
-    ok, reason = _compare_scalar(pred, gt, str_mode=str_mode)
-    if ok:
+    if pred is _MISSING:
+        m["pred_missing"] += 1
+        m["mismatched"] += 1
+        if len(mismatches) < mismatch_limit:
+            mismatches.append(
+                {
+                    "path": path_str,
+                    "gt_raw": _safe_scalar(gt),
+                    "pred_raw": _safe_scalar(pred),
+                    "gt_value": None,
+                    "pred_value": None,
+                    "reason": "pred_missing",
+                }
+            )
+        return
+
+    fmt = schema_eff.get("format") if isinstance(schema_eff.get("format"), str) else None
+
+    matched, reason, pred_v, gt_v = _compare_canon(pred, gt, fmt=fmt, str_mode=str_mode)
+
+    if matched:
         m["matched"] += 1
         return
 
     m["mismatched"] += 1
-    if pred is _MISSING:
-        m["pred_missing"] += 1
-    if reason == "type_mismatch":
-        m["type_mismatch"] += 1
-    if gt is None:
-        m["gt_null"] += 1
-    if pred is None:
-        m["pred_null"] += 1
+    if reason == "gt_canon_error":
+        m["gt_canon_error"] += 1
+    elif reason == "pred_canon_error":
+        m["pred_canon_error"] += 1
+    elif reason == "canon_errors":
+        m["canon_errors"] += 1
+    else:
+        m["value_mismatch"] += 1
 
     if len(mismatches) < mismatch_limit:
         mismatches.append(
             {
                 "path": path_str,
-                "gt": _safe_scalar(gt),
-                "pred": _safe_scalar(pred),
+                "gt_raw": _safe_scalar(gt),
+                "pred_raw": _safe_scalar(pred),
+                "gt_value": _safe_scalar(gt_v),
+                "pred_value": _safe_scalar(pred_v),
                 "reason": reason,
+                "format": fmt,
             }
         )
 
@@ -1237,37 +1485,6 @@ def _schema_leaf_paths(schema: Dict[str, Any], root_schema: Dict[str, Any], *, p
         else:
             out += ("." if out else "") + str(seg)
     return [out or "<root>"]
-
-
-def _build_gt_index(gt_obj: Any, *, image_key: str) -> Dict[str, Dict[str, Any]]:
-    """
-    Build basename -> gt_record mapping.
-    Accepts:
-    - dict[id -> record]
-    - list[record]
-    """
-    records: List[Dict[str, Any]] = []
-    if isinstance(gt_obj, dict):
-        for v in gt_obj.values():
-            if isinstance(v, dict):
-                records.append(v)
-    elif isinstance(gt_obj, list):
-        for v in gt_obj:
-            if isinstance(v, dict):
-                records.append(v)
-
-    out: Dict[str, Dict[str, Any]] = {}
-    for r in records:
-        img = r.get(image_key)
-        if img is None:
-            # Common legacy key
-            img = r.get("image_file")
-        if img is None:
-            continue
-        base = os.path.basename(str(img))
-        if base and base not in out:
-            out[base] = r
-    return out
 
 
 # ---------------------------
@@ -1407,14 +1624,16 @@ async def get_artifacts_backup(
     )
 
 
-@app.get("/v1/debug/artifacts/{request_id}")
-async def read_artifact(
-    request_id: str,
-    date: Optional[str] = Query(default=None, description="Optional day (YYYY-MM-DD) to avoid search."),
+@app.get(
+    "/v1/debug/artifacts/{request_id}",
     dependencies=[
         Depends(_debug_enabled),
         Depends(require_scopes(["debug:read_raw"])),
     ],
+    )
+async def read_artifact(
+    request_id: str,
+    date: Optional[str] = Query(default=None, description="Optional day (YYYY-MM-DD) to avoid search."),
 ) -> Dict[str, Any]:
     p = _find_artifact_path(request_id, date=date)
     if p is None:
@@ -1428,14 +1647,16 @@ async def read_artifact(
     }
 
 
-@app.get("/v1/debug/artifacts/{request_id}/raw")
-async def read_artifact_raw_text(
-    request_id: str,
-    date: Optional[str] = Query(default=None, description="Optional day (YYYY-MM-DD) to avoid search."),
+@app.get(
+    "/v1/debug/artifacts/{request_id}/raw",
     dependencies=[
         Depends(_debug_enabled),
         Depends(require_scopes(["debug:read_raw"])),
     ],
+    )
+async def read_artifact_raw_text(
+    request_id: str,
+    date: Optional[str] = Query(default=None, description="Optional day (YYYY-MM-DD) to avoid search."),
 ) -> Dict[str, Any]:
     p = _find_artifact_path(request_id, date=date)
     if p is None:
@@ -1459,11 +1680,14 @@ class EvalBatchVsGTRequest(BaseModel):
     gt_image_key: str = Field(default="image", description="Key inside each GT record that contains the image path/name (basename is used). Fallback: image_file.")
     gt_record_key: Optional[str] = Field(default=None, description="Optional key inside each GT record to use as the actual GT object (e.g. 'gt' or 'fields').")
     limit: Optional[int] = Field(default=None, ge=1, description="Optional max number of batch items to evaluate.")
-    sort_samples: bool = Field(default=False, description="Sort samples by mismatches in response.")
-    mismatches_per_sample: int = Field(default=30, ge=0, le=200, description="Max mismatches to include per sample.")
-    mismatch_limit_total: int = Field(default=5000, ge=0, le=20000, description="Global cap on stored mismatch entries per sample evaluation (prevents huge responses).")
-    str_mode: str = Field(default="exact", description="String compare mode: exact | strip | strip_collapse")
-    key_fallbacks: bool = Field(default=False, description="If true, try generic key fallbacks like '<name>_raw' -> '<name>' when reading GT/pred objects.")
+
+    # Output size controls (keep endpoint ergonomic).
+    include_samples: bool = Field(default=True, description="Include worst_samples in the saved eval artifact.")
+    samples_limit: int = Field(default=10, ge=0, le=200, description="How many worst samples to include (0 disables).")
+    mismatches_per_sample: int = Field(default=20, ge=0, le=200, description="Max mismatches to include per sample.")
+
+    # Canonicalization controls
+    str_mode: str = Field(default="strip_collapse", description="x-string mode: exact | strip | strip_collapse")
 
 
 class EvalFieldMetric(BaseModel):
@@ -1473,9 +1697,14 @@ class EvalFieldMetric(BaseModel):
     matched: int
     mismatched: int
     accuracy: Optional[float] = None
+
     pred_missing: int = 0
     gt_missing: int = 0
-    type_mismatch: int = 0
+
+    gt_canon_error: int = 0
+    pred_canon_error: int = 0
+    canon_errors: int = 0
+    value_mismatch: int = 0
 
 
 class EvalSampleSummary(BaseModel):
@@ -1519,161 +1748,191 @@ class EvalBatchVsGTResponse(BaseModel):
 @app.post(
     "/v1/debug/eval/batch_vs_gt",
     response_model=EvalBatchVsGTResponse,
-    dependencies=[
-        Depends(_debug_enabled),
-        Depends(require_scopes(["debug:read_raw"])),
-    ],
+    dependencies=[Depends(require_scopes(["debug:run"]))]
 )
-async def eval_batch_vs_gt(req: EvalBatchVsGTRequest) -> EvalBatchVsGTResponse:
-    run_id = (req.run_id or "").strip()
-    _validate_request_id_for_fs(run_id)
+async def eval_batch_vs_gt(
+    req: EvalBatchVsGTRequest,
+) -> EvalBatchVsGTResponse:
+    # Validate
+    if req.str_mode not in {"exact", "strip", "strip_collapse"}:
+        raise HTTPException(status_code=400, detail="str_mode must be one of: exact | strip | strip_collapse")
 
-    if req.str_mode not in ("exact", "strip", "strip_collapse"):
-        raise HTTPException(status_code=400, detail="str_mode must be one of: exact, strip, strip_collapse")
+    # Locate batch artifact
+    batch_path = _find_batch_artifact_path(req.run_id, date=req.batch_date, max_days=req.max_days)
+    if batch_path is None:
+        raise HTTPException(status_code=404, detail="Batch artifact not found (check run_id and batch_date/max_days).")
 
-    batch_p = _find_batch_artifact_path(run_id, date=req.batch_date, max_days=req.max_days)
-    if batch_p is None:
-        raise HTTPException(status_code=404, detail="Batch artifact not found for given run_id (and batch_date/max_days).")
-
-    batch_date = batch_p.parent.name if batch_p.parent else None
-    batch_obj = _read_json_file(batch_p)
+    batch_obj = _read_json_file(batch_path)
     if not isinstance(batch_obj, dict):
-        raise HTTPException(status_code=500, detail="Batch artifact JSON is not an object.")
+        raise HTTPException(status_code=500, detail="Invalid batch artifact JSON (expected object).")
 
-    task_id = batch_obj.get("task_id")
-    task_snapshot = batch_obj.get("task_snapshot") if isinstance(batch_obj.get("task_snapshot"), dict) else {}
-    schema_json = task_snapshot.get("schema_json") if isinstance(task_snapshot.get("schema_json"), dict) else None
+    batch_date = batch_path.parent.name
+    task_id = str(batch_obj.get("task_id") or "")
+    if not task_id:
+        raise HTTPException(status_code=500, detail="Batch artifact missing task_id.")
+    task = _get_task(task_id)
 
-    if schema_json is None:
-        # fallback: use current task schema if available
-        if isinstance(task_id, str) and task_id:
-            schema_json = _get_task(task_id)["schema_value"]
-        else:
-            raise HTTPException(status_code=500, detail="Batch artifact does not contain task_snapshot.schema_json, and task_id is missing.")
+    # Load schema JSON for the task
+    schema_json = task.get("schema_value")
+    if not isinstance(schema_json, dict):
+        raise HTTPException(status_code=500, detail=f"Task {task_id!r} has no schema_value (dict).")
+
+    leaf_paths = _schema_leaf_paths(schema_json)
 
     # Load GT
     gt_p = _validate_under_any_root(Path(req.gt_path), roots=[DATA_ROOT, ARTIFACTS_DIR])
     gt_obj = _read_json_file(gt_p)
 
-    gt_index = _build_gt_index(gt_obj, image_key=req.gt_image_key)
+    # GT may be {id: rec} or [rec, ...]
+    if isinstance(gt_obj, dict):
+        gt_records = list(gt_obj.values())
+    elif isinstance(gt_obj, list):
+        gt_records = gt_obj
+    else:
+        raise HTTPException(status_code=400, detail="GT JSON must be an object or an array of objects.")
 
-    # Evaluation
+    gt_index: Dict[str, Dict[str, Any]] = {}
+    for rec in gt_records:
+        if not isinstance(rec, dict):
+            continue
+        img_val = rec.get(req.gt_image_key)
+        if img_val is None and req.gt_image_key != "image_file":
+            img_val = rec.get("image_file")
+        if img_val is None:
+            continue
+        base = Path(str(img_val)).name
+        if base:
+            gt_index[base] = rec
+
+    # Evaluate
     items = batch_obj.get("items") if isinstance(batch_obj.get("items"), list) else []
     if req.limit is not None:
         items = items[: int(req.limit)]
 
-    # Precompute leaf paths (mostly for visibility)
-    leaf_paths = _schema_leaf_paths(schema_json, schema_json)
-
     metrics: Dict[str, Dict[str, int]] = {}
-    sample_summaries: List[EvalSampleSummary] = []
+    sample_summaries: List[Dict[str, Any]] = []
 
     gt_found = 0
     gt_missing = 0
     pred_found = 0
     pred_missing = 0
 
+    mismatch_limit_total = 5000  # hard cap per sample to keep eval artifacts bounded
+
     for it in items:
         if not isinstance(it, dict):
             continue
 
-        img_rel = it.get("image") or it.get("file") or ""
-        img_base = os.path.basename(str(img_rel))
+        image = it.get("file") or it.get("image") or it.get("image_file")
+        image = str(image) if image is not None else ""
+        image_base = Path(image).name if image else ""
+
         request_id = str(it.get("request_id") or "")
-        artifact_rel = it.get("artifact_rel") if isinstance(it.get("artifact_rel"), str) else None
+        artifact_rel = it.get("artifact_rel")
+        ok = bool(it.get("ok"))
+        schema_ok = bool(it.get("schema_ok"))
 
-        ok_flag = bool(it.get("ok"))
-        schema_ok_flag = bool(it.get("schema_ok"))
-
-        gt_rec = gt_index.get(img_base)
-
-        if gt_rec is None:
-            # fallback: sometimes GT stores relative path with folders that differ; try match by full rel as basename already done
-            gt_missing += 1
-        else:
+        gt_rec = gt_index.get(image_base) if image_base else None
+        gt_ok = gt_rec is not None
+        if gt_ok:
             gt_found += 1
-            if req.gt_record_key:
-                sub = gt_rec.get(req.gt_record_key) if isinstance(gt_rec, dict) else None
-                if isinstance(sub, dict):
-                    gt_rec = sub
-
-        # Read per-sample artifact (parsed prediction)
-        art_obj: Optional[Dict[str, Any]] = None
-        if artifact_rel:
-            p = (ARTIFACTS_DIR / artifact_rel).resolve()
-            try:
-                p.relative_to(ARTIFACTS_DIR)
-            except Exception:
-                raise HTTPException(status_code=400, detail="Invalid artifact_rel in batch artifact (path traversal detected).")
-            if p.exists():
-                data = _read_json_file(p)
-                if isinstance(data, dict):
-                    art_obj = data
-        if art_obj is None and request_id:
-            # best-effort search by request_id across recent days
-            p = _find_artifact_path(request_id, max_days=req.max_days)
-            if p is not None and p.exists():
-                data = _read_json_file(p)
-                if isinstance(data, dict):
-                    art_obj = data
-
-        pred_value = _MISSING
-        if isinstance(art_obj, dict):
-            if "parsed" in art_obj:
-                pred_value = art_obj.get("parsed")
-            elif "result" in art_obj:
-                pred_value = art_obj.get("result")
-
-        if pred_value is _MISSING:
-            pred_missing += 1
         else:
-            pred_found += 1
+            gt_missing += 1
+
+        # Resolve pred artifact
+        pred_obj: Any = _MISSING
+        artifact_abs: Optional[Path] = None
+        if isinstance(artifact_rel, str) and artifact_rel:
+            rel = Path(artifact_rel)
+            if rel.is_absolute():
+                artifact_abs = _validate_under_any_root(rel, roots=[ARTIFACTS_DIR, DATA_ROOT])
+            else:
+                # Old batch format might omit "extracts/" prefix.
+                if len(rel.parts) >= 1 and _DATE_RE.match(rel.parts[0]) and rel.parts[0].count("-") == 2:
+                    rel = Path("extracts") / rel
+                artifact_abs = (ARTIFACTS_DIR / rel).resolve()
+        if artifact_abs is not None and artifact_abs.exists():
+            art = _read_artifact_json(artifact_abs)
+            # Common locations for model output
+            pred_obj = (
+                art.get("parsed")
+                or art.get("result")
+                or art.get("data")
+                or art.get("output")
+                or art.get("extracted")
+                or _MISSING
+            )
+            if pred_obj is not _MISSING:
+                pred_found += 1
+            else:
+                pred_missing += 1
+        else:
+            pred_missing += 1
+
+        # Choose GT payload object
+        gt_payload: Any = gt_rec if gt_rec is not None else _MISSING
+        if gt_payload is not _MISSING and req.gt_record_key:
+            if isinstance(gt_payload, dict) and req.gt_record_key in gt_payload:
+                gt_payload = gt_payload.get(req.gt_record_key)
+            else:
+                # If requested key is missing, treat as missing GT for scoring.
+                gt_payload = _MISSING
 
         mismatches: List[Dict[str, Any]] = []
-        notes: List[str] = []
 
-        if gt_rec is None:
-            notes.append("gt_not_found")
-        else:
-            # Compare only when GT exists; fields with missing GT values are tracked as gt_missing per field.
+        if gt_payload is not _MISSING and pred_obj is not _MISSING:
             _walk_schema(
                 schema_json,
-                pred_value,
-                gt_rec,
+                pred_obj,
+                gt_payload,
                 root_schema=schema_json,
                 path=(),
                 metrics=metrics,
                 mismatches=mismatches,
                 str_mode=req.str_mode,
-                key_fallbacks=req.key_fallbacks,
-                mismatch_limit=int(req.mismatch_limit_total),
+                key_fallbacks=False,
+                mismatch_limit=mismatch_limit_total,
             )
+        elif gt_payload is not _MISSING and pred_obj is _MISSING:
+            # Count missing pred for every leaf path in schema
+            for pth in leaf_paths:
+                m = metrics.setdefault(pth, defaultdict(int))
+                m["total"] += 1
+                m["comparable"] += 1
+                m["pred_missing"] += 1
+                m["mismatched"] += 1
 
-        ss = EvalSampleSummary(
-            image=str(img_rel),
-            request_id=request_id,
-            ok=ok_flag,
-            schema_ok=schema_ok_flag,
-            artifact_rel=artifact_rel,
-            gt_found=gt_rec is not None,
-            pred_found=pred_value is not _MISSING,
-            mismatches=len(mismatches),
-            mismatches_preview=mismatches[: int(req.mismatches_per_sample)],
-            notes=notes,
+        # Build sample summary
+        mismatches_preview = mismatches[: int(req.mismatches_per_sample)] if req.mismatches_per_sample > 0 else []
+
+        sample_summaries.append(
+            {
+                "image": image_base or image,
+                "request_id": request_id,
+                "ok": ok,
+                "schema_ok": schema_ok,
+                "artifact_rel": str(artifact_rel) if artifact_rel is not None else None,
+                "gt_found": gt_ok,
+                "pred_found": pred_obj is not _MISSING,
+                "mismatches": len(mismatches),
+                "mismatches_preview": mismatches_preview,
+                "notes": [],
+            }
         )
-        sample_summaries.append(ss)
 
-    # Build field metrics list
+    # Build per-field metrics (ordered by schema leaf paths if possible)
+    order = {p: i for i, p in enumerate(leaf_paths)}
     field_rows: List[EvalFieldMetric] = []
-    for path, m in metrics.items():
+    for path_str, m in metrics.items():
         total = int(m.get("total", 0))
         comparable = int(m.get("comparable", 0))
         matched = int(m.get("matched", 0))
         mismatched = int(m.get("mismatched", 0))
-        acc = (matched / comparable) if comparable > 0 else None
+        acc = (matched / comparable) if comparable else None
+
         field_rows.append(
             EvalFieldMetric(
-                path=path,
+                path=path_str,
                 total=total,
                 comparable=comparable,
                 matched=matched,
@@ -1681,71 +1940,71 @@ async def eval_batch_vs_gt(req: EvalBatchVsGTRequest) -> EvalBatchVsGTResponse:
                 accuracy=acc,
                 pred_missing=int(m.get("pred_missing", 0)),
                 gt_missing=int(m.get("gt_missing", 0)),
-                type_mismatch=int(m.get("type_mismatch", 0)),
+                gt_canon_error=int(m.get("gt_canon_error", 0)),
+                pred_canon_error=int(m.get("pred_canon_error", 0)),
+                canon_errors=int(m.get("canon_errors", 0)),
+                value_mismatch=int(m.get("value_mismatch", 0)),
             )
         )
 
-    # Sort: worst accuracy first (push fields with comparable==0 to the bottom)
-    def _sort_key(x: EvalFieldMetric):
-        uncmp = 1 if x.comparable <= 0 else 0
-        acc = x.accuracy if x.accuracy is not None else 1.0
-        return (uncmp, acc, -x.comparable, x.path)
+    field_rows.sort(key=lambda r: (order.get(r.path, 10**9), r.path))
 
-    field_rows.sort(key=_sort_key)
+    comparable_total = sum(r.comparable for r in field_rows)
+    matched_total = sum(r.matched for r in field_rows)
+    overall_accuracy = (matched_total / comparable_total) if comparable_total else None
 
-    if req.sort_samples:
-        # Sort by mismatches desc, then ok/schema_ok
-        sample_summaries.sort(key=lambda s: (-s.mismatches, s.ok, s.schema_ok, s.image))
-    
-    comparable_total = sum(fr.comparable for fr in field_rows)
-    matched_total = sum(fr.matched for fr in field_rows)
-    overall_acc = (matched_total / comparable_total) if comparable_total > 0 else None
+    # Pick worst samples (by mismatches)
+    worst_samples: Optional[List[Dict[str, Any]]] = None
+    if req.include_samples and req.samples_limit > 0:
+        worst = [s for s in sample_summaries if int(s.get("mismatches") or 0) > 0]
+        worst.sort(key=lambda s: int(s.get("mismatches") or 0), reverse=True)
+        worst_samples = worst[: int(req.samples_limit)]
 
+    eval_id = f"{req.run_id}__eval_{uuid.uuid4().hex[:8]}"
+    created_at = datetime.now(timezone.utc).isoformat()
 
-    eval_id = f"{run_id}__eval_{uuid.uuid4().hex[:8]}"
-    
-     # Save eval artifact for later inspection.
-    
-    eval_artifact_path = _save_eval_artifact(
-        {
-            "eval_id": eval_id,
-            "run_id": run_id,
-            "batch_date": batch_date,
-            "task_id": task_id if isinstance(task_id, str) else None,
-            "model": batch_obj.get("model") if isinstance(batch_obj.get("model"), str) else None,
-            "inference_backend": (
-                batch_obj.get("inference_backend")
-                if isinstance(batch_obj.get("inference_backend"), str)
-                else None
-            ),
-            "batch_summary": batch_obj.get("summary") if isinstance(batch_obj.get("summary"), dict) else {},
-            "gt_summary": {
-                "gt_path": str(gt_p),
-                "gt_records": len(gt_index),
-                "gt_image_key": req.gt_image_key,
-                "gt_found_for_batch_items": gt_found,
-                "gt_missing_for_batch_items": gt_missing,
-            },
-            "eval_summary": {
-                "items_considered": len(items),
-                "pred_found": pred_found,
-                "pred_missing": pred_missing,
-                "leaf_paths_in_schema": len(leaf_paths),
-                "comparable_total": comparable_total,
-                "matched_total": matched_total,
-                "overall_accuracy": overall_acc,
-            },
-            "fields": [fr.model_dump() for fr in field_rows],
-            "sample_summaries": [s.model_dump() for s in sample_summaries],
-        }
-    )
+    payload: Dict[str, Any] = {
+        "eval_id": eval_id,
+        "created_at": created_at,
+        "run_id": req.run_id,
+        "gt_path": str(gt_p),
+        "batch_artifact_path": str(batch_path),
+        "batch_date": batch_date,
+        "task_id": task_id,
+        "model": batch_obj.get("model"),
+        "inference_backend": batch_obj.get("inference_backend"),
+        "batch_summary": batch_obj.get("summary", {}),
+        "gt_summary": {
+            "gt_path": str(gt_p),
+            "gt_records": len(gt_index),
+            "gt_image_key": req.gt_image_key,
+            "gt_found_for_batch_items": gt_found,
+            "gt_missing_for_batch_items": gt_missing,
+        },
+        "eval_summary": {
+            "items_considered": len(items),
+            "pred_found": pred_found,
+            "pred_missing": pred_missing,
+            "leaf_paths_in_schema": len(leaf_paths),
+            "comparable_total": comparable_total,
+            "matched_total": matched_total,
+            "overall_accuracy": overall_accuracy,
+            "str_mode": req.str_mode,
+            "decimal_sep": _get_decimal_sep(),
+        },
+        "fields": [r.model_dump() for r in field_rows],
+        "worst_samples": worst_samples,
+    }
+
+    eval_artifact_path = _save_eval_artifact(payload)
+
     return EvalBatchVsGTResponse(
         eval_id=eval_id,
-        created_at=datetime.now(timezone.utc).isoformat(),
-        run_id=run_id,
-        gt_path=req.gt_path,
-        batch_artifact_path=str(batch_p),
-        eval_artifact_path=str(eval_artifact_path),
+        created_at=created_at,
+        run_id=req.run_id,
+        gt_path=str(gt_p),
+        batch_artifact_path=str(batch_path),
+        eval_artifact_path=eval_artifact_path,
     )
 
 
@@ -2158,13 +2417,13 @@ async def batch_extract(
         # Validate GT path early for a clearer error.
         _validate_under_any_root(Path(req.gt_path), roots=[DATA_ROOT, ARTIFACTS_DIR])
 
-        # Reuse the same evaluation logic as the debug endpoint.
+        # Reuse the same evaluation logic as the eval_batch_vs_gt endpoint.
         eval_req = EvalBatchVsGTRequest(
             run_id=run_id,
             batch_date=Path(batch_artifact_path).parent.name,
             gt_path=req.gt_path,
             gt_image_key=req.gt_image_key or "image",
-            sort_samples=False,
+            include_samples=False,
             str_mode="exact",
         )
         eval_resp = await eval_batch_vs_gt(eval_req)

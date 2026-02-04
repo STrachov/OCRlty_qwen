@@ -5,36 +5,68 @@
   "additionalProperties": false,
   "properties": {
     "total": {
-      "type": ["string", "null"],
-      "description": "Raw grand total amount EXACTLY as printed on the receipt (e.g., \"580965\", \"Rp 30,000\", \"181,500.00\")."
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Raw grand total amount EXACTLY as printed on the receipt (e.g., \"580965\", \"Rp 30,000\", \"181,500.00\").",
+      "format": "x-money"
     },
     "subtotal": {
-      "type": ["string", "null"],
-      "description": "Raw subtotal amount EXACTLY as printed."
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Raw subtotal amount EXACTLY as printed.",
+      "format": "x-money"
     },
     "tax": {
-      "type": ["string", "null"],
-      "description": "Raw tax amount EXACTLY as printed."
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Raw tax amount EXACTLY as printed.",
+      "format": "x-money"
     },
     "service": {
-      "type": ["string", "null"],
-      "description": "Raw service charge amount EXACTLY as printed."
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Raw service charge amount EXACTLY as printed.",
+      "format": "x-money"
     },
     "discount": {
-      "type": ["string", "null"],
-      "description": "Raw discount amount EXACTLY as printed (may include minus sign)."
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Raw discount amount EXACTLY as printed (may include minus sign).",
+      "format": "x-money"
     },
     "cash": {
-      "type": ["string", "null"],
-      "description": "Raw cash paid/tendered amount EXACTLY as printed."
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Raw cash paid/tendered amount EXACTLY as printed.",
+      "format": "x-money"
     },
     "card": {
-      "type": ["string", "null"],
-      "description": "Raw card/credit payment amount EXACTLY as printed."
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Raw card/credit payment amount EXACTLY as printed.",
+      "format": "x-money"
     },
     "change": {
-      "type": ["string", "null"],
-      "description": "Raw change amount EXACTLY as printed (may include minus sign depending on receipt)."
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Raw change amount EXACTLY as printed (may include minus sign depending on receipt).",
+      "format": "x-money"
     }
   },
   "required": [
