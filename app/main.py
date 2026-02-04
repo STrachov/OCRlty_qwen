@@ -1055,7 +1055,7 @@ def _get_decimal_sep() -> str:
       - "."              : dot is decimal separator
       - ","              : comma is decimal separator
     """
-    v = (os.getenv("OCRLTY_DECIMAL_SEP", "auto") or "auto").strip().lower()
+    v = (os.getenv("OCRLTY_DECIMAL_SEP", ".") or ".").strip().lower()
     if v in {".", ","}:
         return v
     return "auto"
