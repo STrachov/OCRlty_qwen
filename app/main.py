@@ -1051,9 +1051,10 @@ def _get_decimal_sep() -> str:
     """Decimal separator preference for numeric parsing.
 
     OCRLTY_DECIMAL_SEP:
-      - "auto" (default): infer from the string
-      - "."              : dot is decimal separator
+      - "." (default)    : dot is decimal separator
       - ","              : comma is decimal separator
+      - "auto"           : infer from the string
+
     """
     v = (os.getenv("OCRLTY_DECIMAL_SEP", ".") or ".").strip().lower()
     if v in {".", ","}:
@@ -1684,7 +1685,7 @@ class EvalBatchVsGTRequest(BaseModel):
     limit: Optional[int] = Field(default=None, ge=1, description="Optional max number of batch items to evaluate.")
 
     # Output size controls (keep endpoint ergonomic).
-    include_samples: bool = Field(default=True, description="Include worst_samples in the saved eval artifact.")
+    include_worst: bool = Field(default=False, description="Include worst_samples only in the saved eval artifact instead of all samples.")
     samples_limit: int = Field(default=10, ge=0, le=200, description="How many worst samples to include (0 disables).")
     mismatches_per_sample: int = Field(default=20, ge=0, le=200, description="Max mismatches to include per sample.")
 
@@ -1957,10 +1958,11 @@ async def eval_batch_vs_gt(
 
     # Pick worst samples (by mismatches)
     worst_samples: Optional[List[Dict[str, Any]]] = None
-    if req.include_samples and req.samples_limit > 0:
+    if req.include_worst and req.samples_limit > 0:
         worst = [s for s in sample_summaries if int(s.get("mismatches") or 0) > 0]
         worst.sort(key=lambda s: int(s.get("mismatches") or 0), reverse=True)
         worst_samples = worst[: int(req.samples_limit)]
+        sample_summaries = []
 
     eval_id = f"{req.run_id}__eval_{uuid.uuid4().hex[:8]}"
     created_at = datetime.now(timezone.utc).isoformat()
@@ -1996,6 +1998,7 @@ async def eval_batch_vs_gt(
         },
         "fields": [r.model_dump() for r in field_rows],
         "worst_samples": worst_samples,
+        "all_samples": sample_summaries,
     }
 
     eval_artifact_path = _save_eval_artifact(payload)
@@ -2425,7 +2428,7 @@ async def batch_extract(
             batch_date=Path(batch_artifact_path).parent.name,
             gt_path=req.gt_path,
             gt_image_key=req.gt_image_key or "image",
-            include_samples=False,
+            include_worst=False,
             str_mode="exact",
         )
         eval_resp = await eval_batch_vs_gt(eval_req)
