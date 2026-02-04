@@ -1680,7 +1680,7 @@ class EvalBatchVsGTRequest(BaseModel):
     batch_date: Optional[str] = Field(default=None, description="Optional day (YYYY-MM-DD) to avoid searching over days.")
     max_days: int = Field(default=30, ge=1, le=365, description="How many recent days to search for batch artifact if batch_date is not provided.")
     gt_path: str = Field(..., description="Path to GT JSON file (must be under DATA_ROOT or ARTIFACTS_DIR).")
-    gt_image_key: str = Field(default="image", description="Key inside each GT record that contains the image path/name (basename is used). Fallback: image_file.")
+    gt_image_key: str = Field(default="file", description="Key inside each GT record that contains the image path/name (basename is used). Fallback: image_file.")
     gt_record_key: Optional[str] = Field(default=None, description="Optional key inside each GT record to use as the actual GT object (e.g. 'gt' or 'fields').")
     limit: Optional[int] = Field(default=None, ge=1, description="Optional max number of batch items to evaluate.")
 
