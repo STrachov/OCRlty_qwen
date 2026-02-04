@@ -1456,7 +1456,7 @@ def _walk_schema(
         )
 
 
-def _schema_leaf_paths(schema: Dict[str, Any], root_schema: Dict[str, Any], *, path: Tuple[Union[str, None], ...] = ()) -> List[str]:
+def _schema_leaf_paths(schema: Dict[str, Any], root_schema: Dict[str, Any]=None, *, path: Tuple[Union[str, None], ...] = ()) -> List[str]:
     """Return leaf (scalar) paths derived from schema, mostly for reporting."""
     if root_schema is None:
         root_schema = schema
