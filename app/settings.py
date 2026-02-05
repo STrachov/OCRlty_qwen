@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     # --- App ---
     ARTIFACTS_DIR: str = "/workspace/artifacts"
     VLLM_MODEL: str = "Qwen/Qwen3-VL-8B-Instruct"
+    # --- Logging ---
+    # Defaults are suitable for Docker (stdout) + log collectors (Loki/ELK).
+    LOG_LEVEL: str = "INFO"          # DEBUG | INFO | WARNING | ERROR
+    LOG_FORMAT: str = "json"         # json | text
+
 
 
 
@@ -33,11 +38,11 @@ class Settings(BaseSettings):
     #   S3_REGION=auto
     #
     # Credentials: boto3 will read AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY from env.
-    S3_BUCKET: str = ""
+    S3_BUCKET: str = "ocrlty"
     S3_ENDPOINT_URL: str | None = None
     S3_REGION: str = "auto"
     # Support both S3_PREFIX and legacy S3_ARTIFACTS_PREFIX env var names.
-    S3_PREFIX: str = Field(default="ocrlty", validation_alias=AliasChoices("S3_PREFIX", "S3_ARTIFACTS_PREFIX"))
+    S3_PREFIX: str = Field(default="prod", validation_alias=AliasChoices("S3_PREFIX", "S3_ARTIFACTS_PREFIX"))
     S3_ALLOW_OVERWRITE: bool = False
     S3_PRESIGN_TTL_S: int = 3600
     S3_FORCE_PATH_STYLE: bool = False

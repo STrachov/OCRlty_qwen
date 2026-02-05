@@ -11,6 +11,9 @@ import hashlib
 import json
 import mimetypes
 import os
+import logging
+import sys
+import contextvars
 import re
 import unicodedata
 import time
@@ -27,7 +30,7 @@ import boto3
 import botocore
 from botocore.config import Config as BotoConfig
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from jsonschema import Draft202012Validator
@@ -49,6 +52,97 @@ DEFAULT_IMAGES_DIR = str((DATA_ROOT / "data").resolve())
 ARTIFACTS_DIR = Path(settings.ARTIFACTS_DIR).resolve()
 MODEL_ID = settings.VLLM_MODEL
 
+
+
+
+# ---------------------------
+# Minimal JSON logging (request_id correlation)
+# ---------------------------
+# - JSON by default (one line per event), good for Docker + log collectors
+# - request_id is taken from X-Request-ID header (if provided) otherwise generated per request
+_REQUEST_ID_CTX: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="")
+
+def _utc_ts_ms() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+def _safe_log_value(v: Any, *, max_len: int = 1000) -> Any:
+    if v is None or isinstance(v, (int, float, bool)):
+        return v
+    if isinstance(v, str):
+        return v if len(v) <= max_len else (v[: max_len - 3] + "...")
+    try:
+        s = json.dumps(v, ensure_ascii=False)
+    except Exception:
+        s = repr(v)
+    return s if len(s) <= max_len else (s[: max_len - 3] + "...")
+
+class _JsonFormatter(logging.Formatter):
+    _skip = {
+        "args","asctime","created","exc_info","exc_text","filename","funcName","levelname","levelno","lineno",
+        "module","msecs","message","msg","name","pathname","process","processName","relativeCreated",
+        "stack_info","thread","threadName",
+    }
+    def format(self, record: logging.LogRecord) -> str:
+        payload: Dict[str, Any] = {
+            "ts": _utc_ts_ms(),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        rid = _REQUEST_ID_CTX.get() or ""
+        if rid:
+            payload["request_id"] = rid
+
+        ev = getattr(record, "event", None)
+        if ev:
+            payload["event"] = ev
+
+        for k, v in record.__dict__.items():
+            if k in self._skip or k.startswith("_") or k in payload:
+                continue
+            payload[k] = _safe_log_value(v)
+
+        if record.exc_info:
+            payload["exc"] = self.formatException(record.exc_info)
+
+        return json.dumps(payload, ensure_ascii=False)
+
+def _setup_logging() -> None:
+    level_s = str(getattr(settings, "LOG_LEVEL", "INFO")).upper().strip()
+    fmt = str(getattr(settings, "LOG_FORMAT", "json")).lower().strip()
+    level = getattr(logging, level_s, logging.INFO)
+
+    root = logging.getLogger()
+    root.setLevel(level)
+
+    if not any(isinstance(h, logging.StreamHandler) for h in root.handlers):
+        root.addHandler(logging.StreamHandler(stream=sys.stdout))
+
+    for h in root.handlers:
+        if fmt == "text":
+            h.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s %(name)s %(message)s"))
+        else:
+            h.setFormatter(_JsonFormatter())
+
+    logging.getLogger("botocore").setLevel(max(level, logging.INFO))
+    logging.getLogger("boto3").setLevel(max(level, logging.INFO))
+
+LOG = logging.getLogger("ocrlty")
+
+def _set_request_id(rid: str):
+    return _REQUEST_ID_CTX.set(rid or "")
+
+def _reset_request_id(token):
+    try:
+        _REQUEST_ID_CTX.reset(token)
+    except Exception:
+        pass
+
+def _ctx_request_id() -> str:
+    return _REQUEST_ID_CTX.get() or ""
+
+def _log_event(level: int, event: str, **fields: Any) -> None:
+    LOG.log(level, event, extra={"event": event, **fields})
 
 # ---------------------------
 # Artifact storage (S3/R2 or local filesystem)
@@ -389,6 +483,7 @@ vllm = VLLMClient()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _setup_logging()
     init_auth_db()
     _load_tasks()
     yield
@@ -399,6 +494,41 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+# ---------------------------
+# Request logging middleware
+# ---------------------------
+@app.middleware("http")
+async def _log_requests(request: Request, call_next):
+    rid = (request.headers.get("x-request-id") or request.headers.get("x-correlation-id") or uuid.uuid4().hex)
+    token = _set_request_id(rid)
+
+    t0 = time.perf_counter()
+    _log_event(
+        logging.INFO,
+        "request_start",
+        method=request.method,
+        path=str(request.url.path),
+        query=str(request.url.query or ""),
+        client=str(getattr(request.client, "host", "")),
+    )
+    try:
+        resp = await call_next(request)
+        resp.headers["X-Request-ID"] = rid
+        return resp
+    except Exception:
+        dt = (time.perf_counter() - t0) * 1000.0
+        LOG.exception(
+            "request_error",
+            extra={"event": "request_error", "method": request.method, "path": str(request.url.path), "duration_ms": dt},
+        )
+        raise
+    finally:
+        dt = (time.perf_counter() - t0) * 1000.0
+        _log_event(logging.INFO, "request_end", method=request.method, path=str(request.url.path), duration_ms=dt)
+        _reset_request_id(token)
+
 
 
 # ---------------------------
@@ -458,6 +588,9 @@ class ExtractResponse(BaseModel):
 
     # Returned only when DEBUG_MODE=1 and caller has debug:read_raw (or AUTH is disabled).
     raw_model_text: Optional[str] = None
+
+    # Relative artifact pointer (S3 key relative to prefix, or path relative to ARTIFACTS_DIR)
+    artifact_rel: Optional[str] = None
 
 
 class ArtifactListItem(BaseModel):
@@ -2431,7 +2564,7 @@ async def extract(
 ) -> ExtractResponse:
     task = _get_task(req.task_id)
 
-    request_id = _make_request_id(req.request_id)
+    request_id = _make_request_id(req.request_id or _ctx_request_id())
     _validate_request_id_for_fs(request_id)
 
     # image_url is allowed only as a DEBUG feature (DEBUG_MODE=1 and debug:run scope).
@@ -2492,6 +2625,7 @@ async def extract(
             if backend == "mock":
                 raw = _mock_chat_completions(request_id, principal, req.debug, schema_dict=schema_dict)
             else:
+                _log_event(logging.INFO, 'vllm_call_start', backend=backend, model=MODEL_ID, attempt=attempt, retried=retried)
                 raw = await vllm.chat_completions(
                     model=MODEL_ID,
                     messages=messages_cur,
@@ -2501,10 +2635,12 @@ async def extract(
                     request_id=request_id,
                 )
             t_inf1 = time.perf_counter()
+            _log_event(logging.INFO, 'vllm_call_end', backend=backend, model=MODEL_ID, attempt=attempt, duration_ms=(t_inf1 - t_inf0) * 1000.0)
             break
 
         except Exception as e:
             err = str(e)
+            _log_event(logging.WARNING, 'vllm_call_error', backend=backend, model=MODEL_ID, attempt=attempt, error_type=e.__class__.__name__)
             error_history.append(_mk_err("inference_request" if attempt == 0 else "retry_request", err))
 
             # One-shot smart retry: if server says the decoder prompt is too long, downscale the image
@@ -2726,7 +2862,11 @@ async def batch_extract(
                     debug=None,
                 )
 
-                resp = await extract(sub_req, principal)
+                token_item = _set_request_id(request_id)
+                try:
+                    resp = await extract(sub_req, principal)
+                finally:
+                    _reset_request_id(token_item)
                 artifact_rel = resp.artifact_rel
 
                 return {
