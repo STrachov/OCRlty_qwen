@@ -57,13 +57,13 @@ MODEL_ID = settings.VLLM_MODEL
 #   S3_ENDPOINT_URL=https://<ACCOUNT_ID>.r2.cloudflarestorage.com
 #   S3_REGION=auto
 # and provide AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (R2 S3 API tokens).
-_S3_BUCKET = os.getenv("S3_BUCKET", "").strip()
-_S3_ENDPOINT_URL = (os.getenv("S3_ENDPOINT_URL", "").strip() or None)
-_S3_REGION = os.getenv("S3_REGION", "auto").strip()  # R2 uses 'auto' (required by SDK but not used).
-_S3_PREFIX = (os.getenv("S3_PREFIX", os.getenv("S3_ARTIFACTS_PREFIX", "ocrlty"))).strip().strip("/")
-_S3_ALLOW_OVERWRITE = os.getenv("S3_ALLOW_OVERWRITE", "0").lower() in ("1", "true", "yes", "y")
-_S3_PRESIGN_TTL_S = int(os.getenv("S3_PRESIGN_TTL_S", "3600"))
-_S3_FORCE_PATH_STYLE = os.getenv("S3_FORCE_PATH_STYLE", "0").lower() in ("1", "true", "yes", "y")
+_S3_BUCKET = (settings.S3_BUCKET or "").strip()
+_S3_ENDPOINT_URL = settings.S3_ENDPOINT_URL
+_S3_REGION = (settings.S3_REGION or "auto").strip()
+_S3_PREFIX = (settings.S3_PREFIX or "ocrlty").strip().strip("/")
+_S3_ALLOW_OVERWRITE = bool(settings.S3_ALLOW_OVERWRITE)
+_S3_PRESIGN_TTL_S = int(settings.S3_PRESIGN_TTL_S)
+_S3_FORCE_PATH_STYLE = bool(settings.S3_FORCE_PATH_STYLE)
 
 _s3_client_singleton = None
 
