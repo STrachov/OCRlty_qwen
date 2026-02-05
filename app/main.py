@@ -23,6 +23,10 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union, List
 from collections import defaultdict
 
+import boto3
+import botocore
+from botocore.config import Config as BotoConfig
+
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -44,6 +48,240 @@ DEFAULT_IMAGES_DIR = str((DATA_ROOT / "data").resolve())
 
 ARTIFACTS_DIR = Path(settings.ARTIFACTS_DIR).resolve()
 MODEL_ID = settings.VLLM_MODEL
+
+
+# ---------------------------
+# Artifact storage (S3/R2 or local filesystem)
+# ---------------------------
+# Enable S3 mode by setting S3_BUCKET. For Cloudflare R2, also set:
+#   S3_ENDPOINT_URL=https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+#   S3_REGION=auto
+# and provide AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (R2 S3 API tokens).
+_S3_BUCKET = os.getenv("S3_BUCKET", "").strip()
+_S3_ENDPOINT_URL = (os.getenv("S3_ENDPOINT_URL", "").strip() or None)
+_S3_REGION = os.getenv("S3_REGION", "auto").strip()  # R2 uses 'auto' (required by SDK but not used).
+_S3_PREFIX = (os.getenv("S3_PREFIX", os.getenv("S3_ARTIFACTS_PREFIX", "ocrlty"))).strip().strip("/")
+_S3_ALLOW_OVERWRITE = os.getenv("S3_ALLOW_OVERWRITE", "0").lower() in ("1", "true", "yes", "y")
+_S3_PRESIGN_TTL_S = int(os.getenv("S3_PRESIGN_TTL_S", "3600"))
+_S3_FORCE_PATH_STYLE = os.getenv("S3_FORCE_PATH_STYLE", "0").lower() in ("1", "true", "yes", "y")
+
+_s3_client_singleton = None
+
+
+def _s3_enabled() -> bool:
+    return bool(_S3_BUCKET)
+
+
+def _s3_client():
+    global _s3_client_singleton
+    if _s3_client_singleton is not None:
+        return _s3_client_singleton
+
+    # Credentials: prefer standard AWS env vars, but also accept S3_* variants.
+    access_key = os.getenv("AWS_ACCESS_KEY_ID") or os.getenv("S3_ACCESS_KEY_ID") or ""
+    secret_key = os.getenv("AWS_SECRET_ACCESS_KEY") or os.getenv("S3_SECRET_ACCESS_KEY") or ""
+
+    # Let boto3 resolve creds if not explicitly provided.
+    kwargs: Dict[str, Any] = {
+        "service_name": "s3",
+        "region_name": _S3_REGION or None,
+        "endpoint_url": _S3_ENDPOINT_URL,
+        "config": BotoConfig(
+            retries={"max_attempts": 8, "mode": "standard"},
+            s3={"addressing_style": ("path" if _S3_FORCE_PATH_STYLE else "virtual")},
+        ),
+    }
+    if access_key and secret_key:
+        kwargs["aws_access_key_id"] = access_key
+        kwargs["aws_secret_access_key"] = secret_key
+
+    _s3_client_singleton = boto3.client(**kwargs)
+    return _s3_client_singleton
+
+
+def _s3_key(rel: str) -> str:
+    rel = (rel or "").lstrip("/")
+    if _S3_PREFIX:
+        return f"{_S3_PREFIX}/{rel}" if rel else _S3_PREFIX
+    return rel
+
+
+def _utc_day() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _s3_is_retryable_client_error(e: Exception) -> bool:
+    if not isinstance(e, botocore.exceptions.ClientError):
+        return False
+    code = (e.response or {}).get("Error", {}).get("Code", "") or ""
+    status = int((e.response or {}).get("ResponseMetadata", {}).get("HTTPStatusCode", 0) or 0)
+    # Retry on transient-ish errors.
+    if status >= 500:
+        return True
+    if code in {"RequestTimeout", "Throttling", "ThrottlingException", "SlowDown", "InternalError"}:
+        return True
+    return False
+
+
+def _s3_call_with_retries(fn, *, op: str, max_attempts: int = 5) -> Any:
+    # boto3 has built-in retries, but we still wrap it to handle edge network cases.
+    delay_s = 0.25
+    last_err: Optional[Exception] = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return fn()
+        except Exception as e:
+            last_err = e
+            retryable = _s3_is_retryable_client_error(e) or isinstance(
+                e,
+                (
+                    botocore.exceptions.EndpointConnectionError,
+                    botocore.exceptions.ConnectionClosedError,
+                    botocore.exceptions.ReadTimeoutError,
+                    botocore.exceptions.ConnectTimeoutError,
+                ),
+            )
+            if not retryable or attempt == max_attempts:
+                raise
+            time.sleep(delay_s)
+            delay_s = min(delay_s * 2.0, 2.0)
+    raise last_err  # pragma: no cover
+
+
+def _s3_put_json(key: str, payload: Dict[str, Any]) -> None:
+    body = (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+    def _do():
+        kwargs: Dict[str, Any] = {
+            "Bucket": _S3_BUCKET,
+            "Key": key,
+            "Body": body,
+            "ContentType": "application/json; charset=utf-8",
+            "CacheControl": "no-store",
+        }
+        if not _S3_ALLOW_OVERWRITE:
+            # Avoid accidental overwrites if request_id/run_id is reused.
+            kwargs["IfNoneMatch"] = "*"
+        return _s3_client().put_object(**kwargs)
+
+    try:
+        _s3_call_with_retries(_do, op="put_object")
+    except botocore.exceptions.ClientError as e:
+        code = (e.response or {}).get("Error", {}).get("Code", "") or ""
+        # If overwrites are disallowed and the object already exists, treat as success.
+        if code in {"PreconditionFailed"} and not _S3_ALLOW_OVERWRITE:
+            return
+        raise
+
+
+def _s3_get_text(key: str) -> str:
+    def _do():
+        return _s3_client().get_object(Bucket=_S3_BUCKET, Key=key)
+
+    try:
+        obj = _s3_call_with_retries(_do, op="get_object")
+    except botocore.exceptions.ClientError as e:
+        code = (e.response or {}).get("Error", {}).get("Code", "") or ""
+        if code in {"NoSuchKey", "404"}:
+            raise HTTPException(status_code=404, detail="Artifact not found.")
+        raise HTTPException(status_code=502, detail=f"S3 get_object failed: {code}")
+
+    body = obj["Body"].read()
+    return body.decode("utf-8", errors="replace")
+
+
+def _s3_get_json(key: str) -> Dict[str, Any]:
+    try:
+        return json.loads(_s3_get_text(key))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse artifact JSON: {e}")
+
+
+def _s3_exists(key: str) -> bool:
+    def _do():
+        return _s3_client().head_object(Bucket=_S3_BUCKET, Key=key)
+
+    try:
+        _s3_call_with_retries(_do, op="head_object", max_attempts=3)
+        return True
+    except botocore.exceptions.ClientError as e:
+        code = (e.response or {}).get("Error", {}).get("Code", "") or ""
+        if code in {"NoSuchKey", "404"}:
+            return False
+        status = int((e.response or {}).get("ResponseMetadata", {}).get("HTTPStatusCode", 0) or 0)
+        if status == 404:
+            return False
+        raise
+
+
+def _s3_list_common_prefixes(prefix: str) -> List[str]:
+    # Lists immediate children prefixes under prefix (Delimiter="/").
+    out: List[str] = []
+    token: Optional[str] = None
+    while True:
+        def _do():
+            kwargs: Dict[str, Any] = {"Bucket": _S3_BUCKET, "Prefix": prefix, "Delimiter": "/"}
+            if token:
+                kwargs["ContinuationToken"] = token
+            return _s3_client().list_objects_v2(**kwargs)
+
+        resp = _s3_call_with_retries(_do, op="list_objects_v2")
+        for cp in resp.get("CommonPrefixes") or []:
+            pfx = cp.get("Prefix") or ""
+            if pfx:
+                out.append(pfx)
+        token = resp.get("NextContinuationToken")
+        if not token:
+            break
+    return out
+
+
+def _s3_list_objects(prefix: str, *, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    token: Optional[str] = None
+    while True:
+        def _do():
+            kwargs: Dict[str, Any] = {"Bucket": _S3_BUCKET, "Prefix": prefix}
+            if token:
+                kwargs["ContinuationToken"] = token
+            return _s3_client().list_objects_v2(**kwargs)
+
+        resp = _s3_call_with_retries(_do, op="list_objects_v2")
+        for it in resp.get("Contents") or []:
+            out.append(it)
+            if limit is not None and len(out) >= limit:
+                return out
+        token = resp.get("NextContinuationToken")
+        if not token:
+            break
+    return out
+
+
+def _artifact_key(kind: str, day: str, name: str) -> str:
+    return _s3_key(f"{kind}/{day}/{name}")
+
+
+def _extract_artifact_ref(request_id: str, *, day: Optional[str] = None) -> Union[str, Path]:
+    d = day or _utc_day()
+    if _s3_enabled():
+        return _artifact_key("extracts", d, f"{request_id}.json")
+    return (ARTIFACTS_DIR / "extracts" / d / f"{request_id}.json").resolve()
+
+
+def _batch_artifact_ref(run_id: str, *, day: Optional[str] = None) -> Union[str, Path]:
+    d = day or _utc_day()
+    if _s3_enabled():
+        return _artifact_key("batches", d, f"{run_id}.json")
+    return (ARTIFACTS_DIR / "batches" / d / f"{run_id}.json").resolve()
+
+
+def _eval_artifact_ref(eval_id: str, *, day: Optional[str] = None) -> Union[str, Path]:
+    d = day or _utc_day()
+    if _s3_enabled():
+        return _artifact_key("evals", d, f"{eval_id}.json")
+    return (ARTIFACTS_DIR / "evals" / d / f"{eval_id}.json").resolve()
 
 # ---------------------------
 # Context-length safety / smart image retry
@@ -293,6 +531,7 @@ def _validate_request_id_for_fs(request_id: str) -> None:
 
 
 def _ensure_artifacts_dir() -> Path:
+    # Local filesystem mode only.
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     out_dir = ARTIFACTS_DIR / "extracts" / day
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -301,6 +540,16 @@ def _ensure_artifacts_dir() -> Path:
 
 def _save_artifact(request_id: str, payload: Dict[str, Any]) -> str:
     _validate_request_id_for_fs(request_id)
+    day = _utc_day()
+
+    if _s3_enabled():
+        key = str(_extract_artifact_ref(request_id, day=day))
+        try:
+            _s3_put_json(key, payload)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Failed to write artifact to S3: {e}")
+        return key
+
     out_dir = _ensure_artifacts_dir()
     path = out_dir / f"{request_id}.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -308,16 +557,29 @@ def _save_artifact(request_id: str, payload: Dict[str, Any]) -> str:
 
 
 def _to_artifact_rel(p: Union[str, Path]) -> str:
+    """
+    For local mode: path relative to ARTIFACTS_DIR.
+    For S3 mode: key relative to S3_PREFIX (so logs/UI stay readable).
+    """
+    if p is None:
+        return ""
+    s = str(p)
+
+    if _s3_enabled():
+        if _S3_PREFIX and s.startswith(_S3_PREFIX + "/"):
+            return s[len(_S3_PREFIX) + 1 :]
+        return s
+
     try:
-        pp = Path(p).resolve()
+        pp = Path(s).resolve()
         return str(pp.relative_to(ARTIFACTS_DIR))
     except Exception:
-        return str(p)
+        return s
 
 
 def _ensure_batch_artifacts_dir() -> Path:
+    # Local filesystem mode only.
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
     out_dir = ARTIFACTS_DIR / "batches" / day
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir
@@ -325,6 +587,16 @@ def _ensure_batch_artifacts_dir() -> Path:
 
 def _save_batch_artifact(run_id: str, payload: Dict[str, Any]) -> str:
     _validate_request_id_for_fs(run_id)
+    day = _utc_day()
+
+    if _s3_enabled():
+        key = str(_batch_artifact_ref(run_id, day=day))
+        try:
+            _s3_put_json(key, payload)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Failed to write batch artifact to S3: {e}")
+        return key
+
     out_dir = _ensure_batch_artifacts_dir()
     path = out_dir / f"{run_id}.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -332,6 +604,7 @@ def _save_batch_artifact(run_id: str, payload: Dict[str, Any]) -> str:
 
 
 def _ensure_eval_artifacts_dir() -> Path:
+    # Local filesystem mode only.
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     out_dir = ARTIFACTS_DIR / "evals" / day
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -339,8 +612,18 @@ def _ensure_eval_artifacts_dir() -> Path:
 
 
 def _save_eval_artifact(payload: Dict[str, Any]) -> str:
-    eval_id  = payload['eval_id'] or ''
+    eval_id = str(payload.get("eval_id") or "")
     _validate_request_id_for_fs(eval_id)
+    day = _utc_day()
+
+    if _s3_enabled():
+        key = str(_eval_artifact_ref(eval_id, day=day))
+        try:
+            _s3_put_json(key, payload)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Failed to write eval artifact to S3: {e}")
+        return key
+
     out_dir = _ensure_eval_artifacts_dir()
     path = out_dir / f"{eval_id}.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -828,6 +1111,16 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _iter_artifact_days_desc() -> List[str]:
+    if _s3_enabled():
+        base = _s3_key("extracts/")
+        days: List[str] = []
+        for pfx in _s3_list_common_prefixes(base):
+            m = re.search(r"/extracts/(\d{4}-\d{2}-\d{2})/$", pfx)
+            if m:
+                days.append(m.group(1))
+        days.sort(reverse=True)
+        return days
+
     base = ARTIFACTS_DIR / "extracts"
     if not base.exists():
         return []
@@ -839,34 +1132,50 @@ def _iter_artifact_days_desc() -> List[str]:
     return days
 
 
-def _find_artifact_path(request_id: str, *, date: Optional[str] = None, max_days: int = 30) -> Optional[Path]:
+def _find_artifact_path(request_id: str, *, date: Optional[str] = None, max_days: int = 30) -> Optional[Union[Path, str]]:
     _validate_request_id_for_fs(request_id)
 
     if date is not None:
         if not _DATE_RE.match(date):
             raise HTTPException(status_code=400, detail="date must be in YYYY-MM-DD format.")
-        p = (ARTIFACTS_DIR / "extracts") / date / f"{request_id}.json"
+        ref = _extract_artifact_ref(request_id, day=date)
+        if _s3_enabled():
+            return str(ref) if _s3_exists(str(ref)) else None
+        p = Path(ref)
         return p if p.exists() else None
 
     days = _iter_artifact_days_desc()[: max(1, int(max_days))]
     for d in days:
-        p = (ARTIFACTS_DIR / "extracts") / d / f"{request_id}.json"
-        if p.exists():
-            return p
+        ref = _extract_artifact_ref(request_id, day=d)
+        if _s3_enabled():
+            if _s3_exists(str(ref)):
+                return str(ref)
+        else:
+            p = Path(ref)
+            if p.exists():
+                return p
     return None
 
 
-def _artifact_date_from_path(p: Path) -> Optional[str]:
-    # /.../artifacts/YYYY-MM-DD/<id>.json
-    try:
-        return p.parent.name
-    except Exception:
-        return None
+def _artifact_date_from_path(p: Union[str, Path]) -> Optional[str]:
+    if isinstance(p, Path):
+        try:
+            return p.parent.name
+        except Exception:
+            return None
+
+    s = str(p)
+    m = re.search(r"/(extracts|batches|evals)/(\d{4}-\d{2}-\d{2})/", s)
+    return m.group(2) if m else None
 
 
-def _read_artifact_json(p: Path) -> Dict[str, Any]:
+def _read_artifact_json(p: Union[str, Path]) -> Dict[str, Any]:
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        if _s3_enabled() and not isinstance(p, Path):
+            return _s3_get_json(str(p))
+        return json.loads(Path(p).read_text(encoding="utf-8"))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read artifact JSON: {e}")
 
@@ -877,6 +1186,16 @@ def _read_artifact_json(p: Path) -> Dict[str, Any]:
 # ---------------------------
 
 def _iter_batch_days_desc() -> List[str]:
+    if _s3_enabled():
+        base = _s3_key("batches/")
+        days: List[str] = []
+        for pfx in _s3_list_common_prefixes(base):
+            m = re.search(r"/batches/(\d{4}-\d{2}-\d{2})/$", pfx)
+            if m:
+                days.append(m.group(1))
+        days.sort(reverse=True)
+        return days
+
     base = ARTIFACTS_DIR / "batches"
     if not base.exists():
         return []
@@ -888,26 +1207,38 @@ def _iter_batch_days_desc() -> List[str]:
     return days
 
 
-def _find_batch_artifact_path(run_id: str, *, date: Optional[str] = None, max_days: int = 30) -> Optional[Path]:
+def _find_batch_artifact_path(run_id: str, *, date: Optional[str] = None, max_days: int = 30) -> Optional[Union[Path, str]]:
     _validate_request_id_for_fs(run_id)
 
     if date is not None:
         if not _DATE_RE.match(date):
             raise HTTPException(status_code=400, detail="batch_date must be in YYYY-MM-DD format.")
-        p = (ARTIFACTS_DIR / "batches") / date / f"{run_id}.json"
+        ref = _batch_artifact_ref(run_id, day=date)
+        if _s3_enabled():
+            return str(ref) if _s3_exists(str(ref)) else None
+        p = Path(ref)
         return p if p.exists() else None
 
     days = _iter_batch_days_desc()[: max(1, int(max_days))]
     for d in days:
-        p = (ARTIFACTS_DIR / "batches") / d / f"{run_id}.json"
-        if p.exists():
-            return p
+        ref = _batch_artifact_ref(run_id, day=d)
+        if _s3_enabled():
+            if _s3_exists(str(ref)):
+                return str(ref)
+        else:
+            p = Path(ref)
+            if p.exists():
+                return p
     return None
 
 
-def _read_json_file(p: Path) -> Any:
+def _read_json_file(p: Union[str, Path]) -> Any:
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        if _s3_enabled() and not isinstance(p, Path):
+            return json.loads(_s3_get_text(str(p)))
+        return json.loads(Path(p).read_text(encoding="utf-8"))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read JSON file {str(p)!r}: {e}")
 
@@ -1534,13 +1865,31 @@ async def me(principal: ApiPrincipal = Depends(require_scopes([]))):
     ],)
 async def list_artifacts(
     date: Optional[str] = Query(default=None, description="Filter by day (YYYY-MM-DD). If omitted, returns most recent items across days."),
-    limit: int = Query(default=50, ge=1, le=500), 
+    limit: int = Query(default=50, ge=1, le=500),
 ) -> ArtifactListResponse:
     items: List[ArtifactListItem] = []
 
     if date is not None:
         if not _DATE_RE.match(date):
             raise HTTPException(status_code=400, detail="date must be in YYYY-MM-DD format.")
+
+        if _s3_enabled():
+            prefix = str(_extract_artifact_ref("dummy", day=date)).replace("dummy.json", "")
+            objs = _s3_list_objects(prefix, limit=limit * 3)
+            objs.sort(key=lambda x: x.get("LastModified") or datetime.fromtimestamp(0, tz=timezone.utc), reverse=True)
+            for it in objs[:limit]:
+                key = it.get("Key") or ""
+                rid = Path(key).stem
+                meta = ArtifactListItem(request_id=rid, date=date)
+                try:
+                    data = _s3_get_json(key)
+                    meta.task_id = data.get("task_id")
+                    meta.schema_ok = data.get("schema_ok")
+                except Exception:
+                    pass
+                items.append(meta)
+            return ArtifactListResponse(items=items)
+
         day_dir = (ARTIFACTS_DIR / "extracts") / date
         if not day_dir.exists():
             return ArtifactListResponse(items=[])
@@ -1549,7 +1898,6 @@ async def list_artifacts(
         for p in files[:limit]:
             rid = p.stem
             meta = ArtifactListItem(request_id=rid, date=date)
-            # best-effort parse minimal fields
             try:
                 data = _read_artifact_json(p)
                 meta.task_id = data.get("task_id")
@@ -1559,6 +1907,45 @@ async def list_artifacts(
             items.append(meta)
 
         return ArtifactListResponse(items=items)
+
+    # no date: walk recent day folders and collect
+    if _s3_enabled():
+        for d in _iter_artifact_days_desc():
+            prefix = str(_extract_artifact_ref("dummy", day=d)).replace("dummy.json", "")
+            objs = _s3_list_objects(prefix, limit=limit * 3)
+            objs.sort(key=lambda x: x.get("LastModified") or datetime.fromtimestamp(0, tz=timezone.utc), reverse=True)
+            for it in objs:
+                key = it.get("Key") or ""
+                rid = Path(key).stem
+                meta = ArtifactListItem(request_id=rid, date=d)
+                try:
+                    data = _s3_get_json(key)
+                    meta.task_id = data.get("task_id")
+                    meta.schema_ok = data.get("schema_ok")
+                except Exception:
+                    pass
+                items.append(meta)
+                if len(items) >= limit:
+                    return ArtifactListResponse(items=items)
+        return ArtifactListResponse(items=items)
+
+    for d in _iter_artifact_days_desc():
+        day_dir = (ARTIFACTS_DIR / "extracts") / d
+        files = sorted(day_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for p in files:
+            rid = p.stem
+            meta = ArtifactListItem(request_id=rid, date=d)
+            try:
+                data = _read_artifact_json(p)
+                meta.task_id = data.get("task_id")
+                meta.schema_ok = data.get("schema_ok")
+            except Exception:
+                pass
+            items.append(meta)
+            if len(items) >= limit:
+                return ArtifactListResponse(items=items)
+
+    return ArtifactListResponse(items=items)
 
     # no date: walk recent day folders and collect
     for d in _iter_artifact_days_desc():
@@ -1592,25 +1979,47 @@ async def get_artifacts_backup(
     background_tasks: BackgroundTasks,
 ):
     """
-    Create a tar.gz backup of the whole ARTIFACTS_DIR and return it as a download.
+    Create a tar.gz backup of artifacts and return it as a download.
 
     NOTE: This endpoint is debug-only and requires DEBUG_MODE=1 and debug:read_raw scope.
+    In S3 mode, this downloads objects into a temporary tar.gz on-demand (may be slow for large buckets).
     """
-    # Ensure artifacts dir exists so we can create an archive even on a fresh instance.
-    ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
-
     fd, tmp_path = tempfile.mkstemp(prefix="artifacts_backup_", suffix=".tar.gz", dir="/tmp")
     os.close(fd)
 
-    def _build_tar() -> None:
+    def _build_tar_local() -> None:
+        ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
         with tarfile.open(tmp_path, "w:gz") as tar:
-            # Put the top-level folder into the archive for convenient extraction.
             tar.add(str(ARTIFACTS_DIR), arcname=str(ARTIFACTS_DIR.name), recursive=True)
 
+    def _build_tar_s3() -> None:
+        max_objects = int(os.getenv("DEBUG_BACKUP_MAX_OBJECTS", "2000"))
+        prefix = _s3_key("")  # root
+        objs = _s3_list_objects(prefix, limit=max_objects + 1)
+        if len(objs) > max_objects:
+            raise RuntimeError(
+                f"Too many objects for backup (>{max_objects}). Increase DEBUG_BACKUP_MAX_OBJECTS if needed."
+            )
+        with tarfile.open(tmp_path, "w:gz") as tar:
+            for it in objs:
+                key = it.get("Key") or ""
+                if not key or key.endswith("/"):
+                    continue
+                rel = key
+                if _S3_PREFIX and rel.startswith(_S3_PREFIX + "/"):
+                    rel = rel[len(_S3_PREFIX) + 1 :]
+                data = _s3_get_text(key).encode("utf-8", errors="replace")
+                info = tarfile.TarInfo(name=rel)
+                info.size = len(data)
+                info.mtime = int(time.time())
+                tar.addfile(info, BytesIO(data))
+
     try:
-        await asyncio.to_thread(_build_tar)
+        if _s3_enabled():
+            await asyncio.to_thread(_build_tar_s3)
+        else:
+            await asyncio.to_thread(_build_tar_local)
     except Exception:
-        # Clean up tmp file on error.
         try:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
@@ -1769,7 +2178,7 @@ async def eval_batch_vs_gt(
     if not isinstance(batch_obj, dict):
         raise HTTPException(status_code=500, detail="Invalid batch artifact JSON (expected object).")
 
-    batch_date = batch_path.parent.name
+    batch_date = _artifact_date_from_path(batch_path) or (req.batch_date or "")
     task_id = str(batch_obj.get("task_id") or "")
     if not task_id:
         raise HTTPException(status_code=500, detail="Batch artifact missing task_id.")
@@ -2239,7 +2648,7 @@ async def extract(
         errors = [e.message for e in schema_json_validator.iter_errors(parsed)]
         schema_ok = len(errors) == 0
 
-    _save_artifact(
+    artifact_key = _save_artifact(
         request_id,
         {
             **artifact_base,
@@ -2268,6 +2677,7 @@ async def extract(
         raw_model_text=raw_out,
         image_resize=image_resize,
         error_history=error_history,
+        artifact_rel=_to_artifact_rel(artifact_key),
         timings_ms={
             "inference_ms": (t_inf1 - t_inf0) * 1000.0,
             "total_ms": (time.perf_counter() - t0) * 1000.0,
@@ -2316,9 +2726,8 @@ async def batch_extract(
                     debug=None,
                 )
 
-                resp = await extract(sub_req, principal)  
-                art_p = _find_artifact_path(resp.request_id, max_days=30)
-                artifact_rel = _to_artifact_rel(art_p) if art_p is not None else None
+                resp = await extract(sub_req, principal)
+                artifact_rel = resp.artifact_rel
 
                 return {
                     "image": rel_path,
