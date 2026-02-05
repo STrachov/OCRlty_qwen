@@ -11,9 +11,9 @@ RAW OUTPUT RULES (IMPORTANT):
 - Do NOT infer missing values. If a value is not explicitly present or not visible, return null.
 
 Field selection guidance:
-- total_raw: take the amount on the line labeled like TOTAL / GRAND TOTAL / AMOUNT DUE (pick the last such total if multiple).
+- total_raw: take the amount on the line labeled like TOTAL / GRAND TOTAL / AMOUNT DUE / DUE (pick the last such total if multiple).
 - subtotal_raw: take the amount on the line labeled SUBTOTAL.
-- tax_raw: take the amount on the line labeled TAX / VAT.
+- tax_raw: take the amount on the line labeled TAX / VAT / PB1.
 - service_raw: take the amount on the line labeled SERVICE / SERVICE CHARGE.
 - discount_raw: take the amount on the line labeled DISCOUNT.
 - cash_raw: take the amount on the line labeled CASH / CASH PAID (money given by customer).

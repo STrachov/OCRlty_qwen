@@ -416,12 +416,12 @@
       {
         "nm":"Ayam Bakar",
         "cnt":"2",
-        "price":"55.000"
+        "price":"55,000"
       },
       {
         "nm":"Nasi Putih",
         "cnt":"2",
-        "price":"20.000"
+        "price":"20,000"
       },
       {
         "nm":"Nila Bakar\/Goreng",
@@ -431,21 +431,21 @@
       {
         "nm":"Sop Gurame",
         "cnt":"1",
-        "price":"87.000"
+        "price":"87,000"
       },
       {
         "nm":"Teh Poci",
         "cnt":"1",
-        "price":"25.000"
+        "price":"25,000"
       }
     ],
     "total":250107.0,
     "cash":null,
     "change":null,
     "card":null,
-    "subtotal":214.5,
-    "tax":22.737,
-    "service":12.87,
+    "subtotal":214500,
+    "tax":22737,
+    "service":12870,
     "discount":null
   },
   "cord_train_0012":{
@@ -930,7 +930,7 @@
     "cash":10000.0,
     "change":1200.0,
     "card":null,
-    "subtotal":8.0,
+    "subtotal":8000.0,
     "tax":800.0,
     "service":null,
     "discount":null
@@ -1340,12 +1340,12 @@
       "cnt":"1",
       "price":"43.636"
     },
-    "total":48.0,
-    "cash":100.0,
-    "change":52.0,
+    "total":48000,
+    "cash":100000,
+    "change":52000,
     "card":null,
-    "subtotal":43.636,
-    "tax":4.364,
+    "subtotal":43636,
+    "tax":4364,
     "service":null,
     "discount":null
   },
